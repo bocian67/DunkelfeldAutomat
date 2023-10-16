@@ -1,0 +1,7 @@
+flask
+flask-cors
+termcolor
+plotly
+pandas
+ipywidgets>=7.0.0
+dash
