@@ -15,6 +15,7 @@ from termcolor import colored
 import plotly.graph_objects as go
 from random import randrange
 from dash import Dash, dcc, html, Output, Input, callback
+from models import *
 
 mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
 
@@ -29,19 +30,11 @@ color = (0, 0, 255)  # Blau
 bounds_mittweida = {"lat_min": 50.979491, "lat_max":  50.995568, "lon_min": 12.951120, "lon_max": 12.991011}
 
 global thread
-global led
+global map
 global fig
 
 
-class Actor():
-    def __init__(self, x, y, is_criminal):
-        self.x = x
-        self.y = y
-        self.is_criminal = is_criminal
-        self.z = 1 if is_criminal else 0
-
-
-class LED:
+class Map:
     global board
     global c
     global iteration
@@ -60,9 +53,8 @@ class LED:
 
     def main(self):
         self.init_board()
-        self.show_board()
         self.init_user_choice()
-        #self.start_simulation()
+        self.start_simulation()
 
     def init_board(self):
         global board
@@ -74,26 +66,8 @@ class LED:
             column = []
             for row_index in range(0, count):
                 coords = get_coordinate_for_field(row_index, column_index)
-                column.append(Actor(coords[0], coords[1], False))
+                column.append(Criminal(coords[0], coords[1], False))
             board.append(column)
-
-    def show_board(self):
-        row_nr = 0
-        for r in board:
-            col_nr = 0
-            for c in r:
-                col = (0, 0, 0)
-                if board[row_nr][col_nr].is_criminal:
-                    col = self.wheel(((256 // PIXEL_COUNT + ((iteration * 10) % 256))) % 256)
-                else:
-                    col = (0, 0, 0)
-                pos = 0
-                if row_nr % 2 == 0:
-                    pos = (row_nr * 12) + col_nr
-                else:
-                    pos = (row_nr * 12) + 11 - col_nr
-                col_nr += 1
-            row_nr += 1
 
     def show_terminal_board(self):
         cls()
@@ -102,8 +76,14 @@ class LED:
             col_nr = 0
             line = colored("|", 'black')
             for c in r:
-                item_color = 'red' if board[row_nr][col_nr].is_criminal else 'green'
-                line = line + colored("x" if board[row_nr][col_nr].is_criminal else "o", item_color) + colored("|", 'black')
+                if type(board[row_nr][col_nr]) == type(Criminal):
+                    item = colored("x", "red")
+                elif type(board[row_nr][col_nr]) == type(Police):
+                    item = colored("o", "green")
+                else:
+                    item = colored("-", "black")
+
+                line = line + item + colored("|", 'black')
                 col_nr += 1
             row_nr += 1
             print(line)
@@ -123,22 +103,19 @@ class LED:
                     no_change = True
                 new_board = copy.deepcopy(board)
                 iteration += 1
-                print("Iterationen: " + str(iteration))
-                self.show_board()
+                print("Iteration: " + str(iteration))
                 self.show_terminal_board()
                 for col in range(len(board)):
                     for row in range(len(board)):
                         value = board[row][col]
-                        count = self.count_neighbours(row, col)
-                        if (count == 3) and (not value.is_criminal):
-                            value.is_criminal = True
-                            value.z = 1
+                        criminal_neighbor_count = self.count_criminal(row, col)
+                        if (criminal_neighbor_count == 3) and (type(value) == type(Actor)):
+                            value = Criminal(value.x, value.y, 1)
                             new_board[row][col] = value
                             c += 1
                             no_change = False
-                        elif ((count < 2) or (count > 3)) & value.is_criminal:
-                            value.is_criminal = False
-                            value.z = 0
+                        elif ((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and (type(value) == type(Criminal)):
+                            value = Actor(value.x, value.y)
                             new_board[row][col] = value
                             c -= 1
                             no_change = False
@@ -153,7 +130,7 @@ class LED:
             print("Unexpected error:", sys.exc_info()[0])
             raise
 
-    def count_neighbours(self, row, col):
+    def count_criminal(self, row, col):
         n = 0
         for i in range(-1, 2):
             for j in range(-1, 2):
@@ -161,7 +138,7 @@ class LED:
                     r = row + i
                     c = col + j
                     if (r >= 0) & (r < len(board)) & (c >= 0) & (c < len(board)):
-                        n += 1 if board[r][c].is_criminal else 0
+                        n += 1 if type(board[r][c]) == type(Criminal) else 0
         return n
 
     def wheel(self, pos):
@@ -174,18 +151,21 @@ class LED:
             pos -= 170
             return (0, pos * 3, 255 - pos * 3)
 
-    def random_fill(self, probability=0.2):
+    def random_fill(self, criminal_probability=0.3, police_probability=0.2):
         global board
         global c
         c = 0
         for col in range(len(board)):
             for row in range(len(board)):
                 coords = get_coordinate_for_field(row, col)
-                if random.random() < probability:
-                    board[row][col] = Actor(coords[0], coords[1], True)
+                random_probability = random.random()
+                if random_probability < criminal_probability:
+                    board[row][col] = Criminal(coords[0], coords[1], 1)
                     c += 1
+                elif random_probability < criminal_probability + police_probability:
+                    board[row][col] = Police(coords[0], coords[1])
                 else:
-                    board[row][col] = Actor(coords[0], coords[1], False)
+                    board[row][col] = Actor(coords[0], coords[1])
 
         self.show_terminal_board()
 
@@ -202,11 +182,11 @@ class LED:
 @app.route('/board/random', methods=['GET', 'POST'])
 def start_sim_with_random():
     global thread
-    global led
+    global map
     global is_running
     if is_running:
-        led.terminate()
-    thread = Thread(target=led.start_sim_with_random)
+        map.terminate()
+    thread = Thread(target=map.start_sim_with_random)
     thread.start()
     return 'Done!'
 
@@ -215,34 +195,34 @@ def start_sim_with_random():
 @app.route('/board/terminate', methods=['GET', 'POST'])
 def terminate():
     global thread
-    global led
-    led.terminate()
+    global map
+    map.terminate()
     return 'Terminated!'
 
 
 @cross_origin()
 @app.route('/board/new', methods=['POST'])
 def get_data_from_ui():
-    global led
+    global map
     global thread
     global is_running
     global board
     data = request.get_json()
     if is_running:
-        led.terminate()
+        map.terminate()
     board = data
-    count_living(data)
-    thread = Thread(target=led.start_sim_with_data)
+    count_criminal(data)
+    thread = Thread(target=map.start_sim_with_data)
     thread.start()
     return "Got Data"
 
 
-def count_living(data):
+def count_criminal(data):
     global c
     c = 0
     for row in range(len(data)):
         for col in range(len(data)):
-            if data[col][row].is_criminal:
+            if type(data[col][row]) == type(Criminal):
                 c += 1
 
 
@@ -261,7 +241,7 @@ def get_coordinate_for_field(row, column) -> (float, float):
               Input('interval-component', 'n_intervals'))
 def update_graph_live(n):
     global fig
-    data = led.get_actors()
+    data = map.get_actors()
     data_df = pd.DataFrame([vars(f) for f in data])
     data = fig.data[0]
     data.lat = data_df.x
@@ -272,23 +252,23 @@ def update_graph_live(n):
 
 
 if __name__ == "__main__":
-    global led
+    global map
     global is_running
     global fig
     os.system('color')
     is_running = False
-    led = LED()
-    led.init_board()
-    led.random_fill()
-    led.show_board()
+    map = Map()
+    map.init_board()
+    map.random_fill()
 
-    data = led.get_actors()
+    data = map.get_actors()
     data_df = pd.DataFrame([vars(f) for f in data])
 
     fig = go.Figure(go.Densitymapbox(
         lat=data_df.x,
         lon=data_df.y,
-        z=data_df.z
+        z=data_df.z,
+        radius=15
     ))
 
     """
