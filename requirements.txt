@@ -5,3 +5,8 @@ plotly
 pandas
 ipywidgets>=7.0.0
 dash
+pymbtiles
+mapbox-vector-tile
+geopandas
+pymongo[srv]
+pyGeoTile

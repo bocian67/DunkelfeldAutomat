@@ -7,6 +7,7 @@ from os import system, name
 from threading import Thread
 from time import sleep
 
+from dash import dash_table
 import pandas as pd
 import plotly.express as px
 from flask import Flask, request
@@ -23,11 +24,11 @@ app = Flask(__name__)
 CORS(app)
 app.config['CORS_HEADERS'] = 'Content-Type'
 # Configure the count of pixels:
-PIXEL_COUNT = 144
+CELL_COUNT = 144
 
 color = (0, 0, 255)  # Blau
 
-bounds_mittweida = {"lat_min": 50.979491, "lat_max":  50.995568, "lon_min": 12.951120, "lon_max": 12.991011}
+bounds_mittweida = {"lat_min": 50.979491, "lat_max": 50.995568, "lon_min": 12.951120, "lon_max": 12.991011}
 
 global thread
 global map
@@ -76,9 +77,9 @@ class Map:
             col_nr = 0
             line = colored("|", 'black')
             for c in r:
-                if type(board[row_nr][col_nr]) == type(Criminal):
+                if isinstance(board[row_nr][col_nr], Criminal):
                     item = colored("x", "red")
-                elif type(board[row_nr][col_nr]) == type(Police):
+                elif isinstance(board[row_nr][col_nr], Police):
                     item = colored("o", "green")
                 else:
                     item = colored("-", "black")
@@ -109,12 +110,13 @@ class Map:
                     for row in range(len(board)):
                         value = board[row][col]
                         criminal_neighbor_count = self.count_criminal(row, col)
-                        if (criminal_neighbor_count == 3) and (type(value) == type(Actor)):
+                        if (criminal_neighbor_count == 3) and isinstance(value, Actor):
                             value = Criminal(value.x, value.y, 1)
                             new_board[row][col] = value
                             c += 1
                             no_change = False
-                        elif ((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and (type(value) == type(Criminal)):
+                        elif (((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and
+                              isinstance(value, Criminal)):
                             value = Actor(value.x, value.y)
                             new_board[row][col] = value
                             c -= 1
@@ -138,7 +140,7 @@ class Map:
                     r = row + i
                     c = col + j
                     if (r >= 0) & (r < len(board)) & (c >= 0) & (c < len(board)):
-                        n += 1 if type(board[r][c]) == type(Criminal) else 0
+                        n += 1 if isinstance(board[r][c], Criminal) else 0
         return n
 
     def wheel(self, pos):
@@ -163,7 +165,7 @@ class Map:
                     board[row][col] = Criminal(coords[0], coords[1], 1)
                     c += 1
                 elif random_probability < criminal_probability + police_probability:
-                    board[row][col] = Police(coords[0], coords[1])
+                    board[row][col] = Police(coords[0], coords[1], -1)
                 else:
                     board[row][col] = Actor(coords[0], coords[1])
 
@@ -222,7 +224,7 @@ def count_criminal(data):
     c = 0
     for row in range(len(data)):
         for col in range(len(data)):
-            if type(data[col][row]) == type(Criminal):
+            if isinstance(data[col][row], Criminal):
                 c += 1
 
 
@@ -237,8 +239,10 @@ def get_coordinate_for_field(row, column) -> (float, float):
     y = bounds_mittweida["lon_min"] + column * y_step
     return x, y
 
+
 @callback(Output('graph', 'figure'),
-              Input('interval-component', 'n_intervals'))
+          Output('info', 'children'),
+          Input('interval-component', 'n_intervals'))
 def update_graph_live(n):
     global fig
     data = map.get_actors()
@@ -248,7 +252,46 @@ def update_graph_live(n):
     data.lon = data_df.y
     data.z = data_df.z
     fig['layout']['uirevision'] = "foo"
-    return fig
+    children = generate_info_table()
+    return fig, children
+
+
+@callback(Output('submit-button', 'n_clicks'),
+          Input('submit-button', 'n_clicks'),
+          Input('criminal-slider', 'value'),
+          Input('police-slider', 'value'))
+def init_random_using_slider(button_value, criminal_value, police_value):
+    global thread
+    global map
+    global is_running
+    if button_value:
+        if is_running:
+            map.terminate()
+        map.init_board()
+        map.random_fill(criminal_value, police_value)
+        thread = Thread(target=map.start_simulation)
+        thread.start()
+    return 0
+
+
+
+def generate_info_table():
+    actor = 0
+    police = 0
+    criminal = 0
+    for row in board:
+        for value in row:
+            if isinstance(value, Criminal):
+                criminal += 1
+            elif isinstance(value, Actor):
+                actor += 1
+            elif isinstance(value, Police):
+                police += 1
+    return html.Div(children=[
+        html.Div(children=["Actors: " + str(actor)]),
+        html.Div(children=["Criminals: " + str(criminal)]),
+        html.Div(children=["Police: " + str(police)])
+    ])
 
 
 if __name__ == "__main__":
@@ -262,15 +305,16 @@ if __name__ == "__main__":
     map.random_fill()
 
     data = map.get_actors()
-    data_df = pd.DataFrame([vars(f) for f in data])
+    data_df = pd.DataFrame([vars(f) for f in data if f.z != 0])
 
     fig = go.Figure(go.Densitymapbox(
         lat=data_df.x,
         lon=data_df.y,
         z=data_df.z,
-        radius=15
+        radius=15,
+        colorscale=[[0, 'rgb(0,0,255)'],[1, 'rgb(255,0,0)']]
     ))
-
+    #  [0.5, 'rgb(0,0,0)'],
     """
         fig = go.Figure(go.Scattermapbox(
             lat=data_df.x,
@@ -291,25 +335,46 @@ if __name__ == "__main__":
                 lon=12.9737849
             ),
             pitch=0,
-            zoom=16
+            zoom=14,
+            style="satellite-streets"
         )
     )
     fig['layout']['uirevision'] = "foo"
 
-    #fig.show()
-    #fig_widget = go.FigureWidget(fig)
+    # fig.show()
+    # fig_widget = go.FigureWidget(fig)
 
     dash_app = Dash(__name__, server=app)
     dash_app.layout = html.Div([
-        dcc.Graph(figure=fig, id='graph', style={"height":"100vh"}),
+        html.Div(id='info'),
+        html.Div(id='input-container', children=[
+            html.Label("Criminals in %", htmlFor='criminal-slider'),
+            dcc.Slider(
+                0,
+                50,
+                step=None,
+                value=6.5,
+                id='criminal-slider'
+            ),
+            html.Label("Police in %", htmlFor='police-slider'),
+            dcc.Slider(
+                0,
+                50,
+                step=None,
+                value=6.5,
+                id='police-slider'
+            ),
+            html.Button(id='submit-button', children='Submit'),
+        ]),
+        dcc.Graph(figure=fig, id='graph', style={"height": "100vh"}),
         dcc.Interval(
             id='interval-component',
             interval=1 * 500,  # in milliseconds
             n_intervals=0
         )
-    ], style={"height":"100vh"})
+    ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
 
     # Flask app
-    #app.run(debug=True, host='0.0.0.0', port=5000)
+    # app.run(debug=True, host='0.0.0.0', port=5000)
