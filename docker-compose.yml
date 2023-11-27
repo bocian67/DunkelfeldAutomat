@@ -2,12 +2,10 @@
 version: '3.1'
 
 services:
-  MittweidaTiles:
-    image: mongo
+  Tileserver:
+    image: maptiler/tileserver-gl
     restart: always
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: example
-      MONGO_INITDB_DATABASE: mittweida
     ports:
-      - "127.0.0.1:27017:27017"
+      - "127.0.0.1:9999:8080"
+    volumes:
+      -  ./tiles/:/data

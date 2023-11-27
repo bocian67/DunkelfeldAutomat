@@ -10,3 +10,7 @@ mapbox-vector-tile
 geopandas
 pymongo[srv]
 pyGeoTile
+folium
+matplotlib
+mapclassify
+folium
