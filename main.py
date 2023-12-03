@@ -8,6 +8,7 @@ from os import system, name
 from threading import Thread
 from time import sleep
 
+import numpy as np
 from dash import dash_table
 import pandas as pd
 import plotly.express as px
@@ -17,8 +18,11 @@ from termcolor import colored
 import plotly.graph_objects as go
 from random import randrange
 from dash import Dash, dcc, html, Output, Input, callback
+
+from database import get_database
 from models import *
 import geopandas as gpd
+from helpers import format_to_coord_list
 
 mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
 
@@ -305,38 +309,50 @@ if __name__ == "__main__":
     map.init_board()
     map.random_fill()
 
-    housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
+    housenumbers = gpd.read_file("tiles/mittweida.housenumber.geojson")
     transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
     transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
 
-    with open("tiles/mittweida.geojson", encoding="utf8") as f:
-        features = json.load(f)["features"]
+    db = get_database()
+    collection = db["intersections"]
+    intersections = collection.find({})
+    parsed_intersections = []
+    for i in intersections:
+        json = i["intersections"]
+        for intersection in json:
+            parsed_intersections.append(intersection["coordinates"])
 
     data = map.get_actors()
     data_df = pd.DataFrame([vars(f) for f in data if f.z != 0])
-    """
-        fig = go.Figure(go.Densitymapbox(
-            lat=data_df.x,
-            lon=data_df.y,
-            z=data_df.z,
-            radius=15,
-            # colorscale=[[0, 'rgb(0,0,255)'],[1, 'rgb(255,0,0)']]
-        ))
-    """
+    # Housenumbers:
+    # fig = go.Figure(go.Scattermapbox(
+    #     lat=housenumbers.geometry.y.values,
+    #     lon=housenumbers.geometry.x.values,
+    #     mode='markers',
+    #     marker=go.scattermapbox.Marker(
+    #         size=5,
+    #     ),
+    #     hoverinfo='text',
+    #     hovertext=housenumbers.housenumber
+    # ))
+
+    intersections_x = list(zip(*parsed_intersections))[0]
+    intersections_y = list(zip(*parsed_intersections))[1]
+
+
     fig = go.Figure(go.Scattermapbox(
-        lat=housenumber_df.geometry.y.values,
-        lon=housenumber_df.geometry.x.values,
+        lat=intersections_x,
+        lon=intersections_y,
         mode='markers',
         marker=go.scattermapbox.Marker(
             size=5,
-        ),
-        hoverinfo='text',
-        hovertext=housenumber_df.housenumber
+        )
     ))
 
     fig.update_layout(
         mapbox=dict(center=go.layout.mapbox.Center(lat=50.9872722, lon=12.9737849), zoom=14, accesstoken=mapbox_token),
         mapbox_style="satellite-streets",
+        #mapbox_style="white-bg",
         mapbox_layers=[
             #{
             #    "below": 'traces',
@@ -354,6 +370,8 @@ if __name__ == "__main__":
     )
     fig['layout']['uirevision'] = "foo"
     fig.layout.hovermode = "closest"
+
+
 
     # fig.show()
     # fig_widget = go.FigureWidget(fig)

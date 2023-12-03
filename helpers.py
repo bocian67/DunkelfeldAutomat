@@ -1,5 +1,7 @@
 import math
 
+from shapely import LineString, MultiLineString
+
 originShift = 2 * math.pi * 6378137 / 2.0
 tileSize = 4096
 initialResolution = 2 * math.pi * 6378137 / tileSize
@@ -76,3 +78,18 @@ def Resolution(zoom):
 
     # return (2 * math.pi * 6378137) / (self.tileSize * 2**zoom)
     return initialResolution / (2 ** zoom)
+
+## LINESTRING
+
+def format_to_coord_list(geometry):
+    if isinstance(geometry, LineString):
+        xy = geometry.xy
+        longs = xy[0].tolist()
+        lats = xy[1].tolist()
+        return [list(z) for z in zip(lats, longs)]
+    #elif isinstance(geometry, MultiLineString):
+    #    intermediate = []
+    #    for i in geometry.geoms:
+    #        intermediate += format_to_coord_list(i)
+    #    return intermediate
+    #    #return [format_to_coord_list(i) for i in geometry.geoms]
