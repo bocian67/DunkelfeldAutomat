@@ -47,6 +47,15 @@ class Map:
     global iteration
     global is_running
 
+    def __init__(self):
+        self.db = get_database()
+        #self.housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
+        with open("tiles/mittweida.transportation.geojson") as f:
+            self.transportations = json.load(f)
+        #self.transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
+        #self.transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
+        self.transportations_collection = self.db["transportations"]
+
     def get_actors(self):
         actors = []
         for row in board:
@@ -58,22 +67,18 @@ class Map:
         is_running = False
         sleep(1)
 
-    def main(self):
-        self.init_board()
-        self.init_user_choice()
-        self.start_simulation()
-
     def init_board(self):
         global board
         global iteration
         iteration = 0
         board = []
-        count = 12
+        count = 8
         for column_index in range(0, count):
             column = []
             for row_index in range(0, count):
-                coords = get_coordinate_for_field(row_index, column_index)
-                column.append(Criminal(coords[0], coords[1], False))
+                # coords = get_coordinate_for_field(row_index, column_index)
+                coords = self.get_random_actor_coordinate()
+                column.append(Criminal(coords, 0))
             board.append(column)
 
     def show_terminal_board(self):
@@ -149,31 +154,22 @@ class Map:
                         n += 1 if isinstance(board[r][c], Criminal) else 0
         return n
 
-    def wheel(self, pos):
-        if pos < 85:
-            return (pos * 3, 255 - pos * 3, 0)
-        elif pos < 170:
-            pos -= 85
-            return (255 - pos * 3, 0, pos * 3)
-        else:
-            pos -= 170
-            return (0, pos * 3, 255 - pos * 3)
-
     def random_fill(self, criminal_probability=0.3, police_probability=0.2):
         global board
         global c
         c = 0
         for col in range(len(board)):
             for row in range(len(board)):
-                coords = get_coordinate_for_field(row, col)
+                #coords = get_coordinate_for_field(row, col)
+                coords = self.get_random_actor_coordinate()
                 random_probability = random.random()
                 if random_probability < criminal_probability:
-                    board[row][col] = Criminal(coords[0], coords[1], 1)
+                    board[row][col] = Criminal(coords, 1)
                     c += 1
                 elif random_probability < criminal_probability + police_probability:
-                    board[row][col] = Police(coords[0], coords[1], -1)
+                    board[row][col] = Police(coords, -1)
                 else:
-                    board[row][col] = Actor(coords[0], coords[1])
+                    board[row][col] = Actor(coords)
 
         self.show_terminal_board()
 
@@ -184,6 +180,35 @@ class Map:
 
     def start_sim_with_data(self):
         self.start_simulation()
+
+    def get_random_actor_coordinate(self):
+        max_docs = self.transportations_collection.count_documents({})
+        while True:
+            random_street_index = random.randint(0, max_docs - 1)
+            street = self.transportations_collection.find_one({"id": random_street_index})
+            geometry = street["geometry"]
+            if geometry["type"] == "LineString":
+                break
+
+        random_linestring_checkpoint_index = random.randint(0, len(geometry["coordinates"]) - 1)
+        random_linestring_checkpoint = geometry["coordinates"][random_linestring_checkpoint_index]
+        if random_linestring_checkpoint_index > 0:
+            previous_linestring_checkpoint = geometry["coordinates"][random_linestring_checkpoint_index - 1]
+            positive_direction = True
+        else:
+            previous_linestring_checkpoint = geometry["coordinates"][random_linestring_checkpoint_index + 1]
+            positive_direction = False
+        return ActorCoordinate(random_street_index,
+                               positive_direction,
+                               float(random_linestring_checkpoint[0]),
+                               float(random_linestring_checkpoint[1]),
+                               float(random_linestring_checkpoint[0]),
+                               float(random_linestring_checkpoint[1]),
+                               float(previous_linestring_checkpoint[0]),
+                               float(previous_linestring_checkpoint[1]))
+
+
+
 
 
 @cross_origin()
@@ -246,20 +271,69 @@ def get_coordinate_for_field(row, column) -> (float, float):
     return x, y
 
 
-#@callback(Output('graph', 'figure'),
-#          Output('info', 'children'),
-#          Input('interval-component', 'n_intervals'))
+# background=True,
+# manager=background_callback_manager)
+@callback(Output('graph', 'figure'),
+          Output('info', 'children'),
+          Input('interval-component', 'n_intervals'))
 def update_graph_live(n):
     global fig
+    data_map = fig.data[0]
     data = map.get_actors()
-    data_df = pd.DataFrame([vars(f) for f in data])
-    data = fig.data[0]
-    data.lat = data_df.x
-    data.lon = data_df.y
+    data = run_streets(data)
+    data_df = data_to_df(data)
+
+    data_map.lat = data_df.y.values
+    data_map.lon = data_df.x.values
     #data.z = data_df.z
     fig['layout']['uirevision'] = "foo"
     children = generate_info_table()
     return fig, children
+
+def run_streets(data):
+    for actor in data:
+        street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
+        linestrings = street["geometry"]["coordinates"]
+        linestring_index = linestrings.index([actor.coordinates.direction_checkmark_x, actor.coordinates.direction_checkmark_y])
+
+        if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
+            if actor.coordinates.direction_positive and linestring_index < len(linestrings) - 1:
+                next_linestring = linestrings[linestring_index+1]
+            elif actor.coordinates.direction_positive and linestring_index == len(linestrings) - 1:
+                next_linestring = linestrings[linestring_index-1]
+                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+            elif not actor.coordinates.direction_positive and linestring_index > 0:
+                next_linestring = linestrings[linestring_index-1]
+            elif not actor.coordinates.direction_positive and linestring_index == 0:
+                next_linestring = linestrings[linestring_index + 1]
+                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+            actor.coordinates.previous_checkpoint_x = actor.coordinates.direction_checkmark_x
+            actor.coordinates.previous_checkpoint_y = actor.coordinates.direction_checkmark_y
+            actor.coordinates.direction_checkmark_x = next_linestring[0]
+            actor.coordinates.direction_checkmark_y = next_linestring[1]
+
+        coordinate_gap_x = abs(actor.coordinates.previous_checkpoint_x - actor.coordinates.direction_checkmark_x)
+        coordinate_gap_y = abs(actor.coordinates.previous_checkpoint_y - actor.coordinates.direction_checkmark_y)
+
+        if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+            actor.coordinates.x += (coordinate_gap_x / 5)
+            if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
+                actor.coordinates.x = actor.coordinates.direction_checkmark_x
+        else:
+            actor.coordinates.x -= (coordinate_gap_x / 5)
+            if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+                actor.coordinates.x = actor.coordinates.direction_checkmark_x
+
+        if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+            actor.coordinates.y += (coordinate_gap_y / 5)
+            if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
+                actor.coordinates.y = actor.coordinates.direction_checkmark_y
+        else:
+            actor.coordinates.y -= (coordinate_gap_y / 5)
+            if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+                actor.coordinates.y = actor.coordinates.direction_checkmark_y
+
+    return data
 
 
 @callback(Output('submit-button', 'n_clicks'),
@@ -299,6 +373,14 @@ def generate_info_table():
     ])
 
 
+def data_to_df(data):
+    data_attrs = []
+    for item in data:
+        item_vars = {"z": item.z} | vars(item.coordinates)
+        data_attrs.append(item_vars)
+    return pd.DataFrame(data_attrs)
+
+
 if __name__ == "__main__":
     global map
     global is_running
@@ -309,43 +391,25 @@ if __name__ == "__main__":
     map.init_board()
     map.random_fill()
 
-    housenumbers = gpd.read_file("tiles/mittweida.housenumber.geojson")
-    transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
-    transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
-
-    db = get_database()
-    collection = db["intersections"]
-    intersections = collection.find({})
-    parsed_intersections = []
-    for i in intersections:
-        json = i["intersections"]
-        for intersection in json:
-            parsed_intersections.append(intersection["coordinates"])
-
     data = map.get_actors()
-    data_df = pd.DataFrame([vars(f) for f in data if f.z != 0])
-    # Housenumbers:
-    # fig = go.Figure(go.Scattermapbox(
-    #     lat=housenumbers.geometry.y.values,
-    #     lon=housenumbers.geometry.x.values,
-    #     mode='markers',
-    #     marker=go.scattermapbox.Marker(
-    #         size=5,
-    #     ),
-    #     hoverinfo='text',
-    #     hovertext=housenumbers.housenumber
-    # ))
-
-    intersections_x = list(zip(*parsed_intersections))[0]
-    intersections_y = list(zip(*parsed_intersections))[1]
-
-
+    data_df = data_to_df(data)
+    # data_df = pd.DataFrame([vars(f) for f in data if f.z != 100])
+    """
+        fig = go.Figure(go.Densitymapbox(
+            lat=data_df.x,
+            lon=data_df.y,
+            z=data_df.z,
+            radius=15,
+            # colorscale=[[0, 'rgb(0,0,255)'],[1, 'rgb(255,0,0)']]
+        ))
+    """
     fig = go.Figure(go.Scattermapbox(
-        lat=intersections_x,
-        lon=intersections_y,
+        lat=data_df.y.values,
+        lon=data_df.x.values,
         mode='markers',
         marker=go.scattermapbox.Marker(
-            size=5,
+            size=12,
+            color="red"
         )
     ))
 
@@ -354,17 +418,14 @@ if __name__ == "__main__":
         mapbox_style="satellite-streets",
         #mapbox_style="white-bg",
         mapbox_layers=[
-            #{
-            #    "below": 'traces',
-            #    "sourcetype": "vector",
-            #    "source": [
-            #        "http://localhost:9999/data/openmaptiles/{z}/{x}/{y}.pbf"
-            #    ],
-            #    "type": "line",
-            #    "color": "#2e1900",
-            #    "opacity": 1,
-            #    "sourcelayer": "transportation"
-            #},
+            {
+                "below": 'traces',
+                "sourcetype": "geojson",
+                "source": map.transportations,
+                "type": "line",
+                "color": "#2e1900",
+                "opacity": 1
+            },
         ],
         hovermode="closest"
     )
@@ -401,7 +462,7 @@ if __name__ == "__main__":
         dcc.Graph(figure=fig, id='graph', style={"height": "100vh"}),
         dcc.Interval(
             id='interval-component',
-            interval=1 * 500,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         )
     ], style={"height": "100vh"})
