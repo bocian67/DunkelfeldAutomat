@@ -55,6 +55,7 @@ class Map:
         #self.transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
         #self.transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
         self.transportations_collection = self.db["transportations"]
+        self.intersections_collection = self.db["intersections"]
 
     def get_actors(self):
         actors = []
@@ -297,24 +298,48 @@ def run_streets(data):
         linestring_index = linestrings.index([actor.coordinates.direction_checkmark_x, actor.coordinates.direction_checkmark_y])
 
         if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
-            if actor.coordinates.direction_positive and linestring_index < len(linestrings) - 1:
-                next_linestring = linestrings[linestring_index+1]
-            elif actor.coordinates.direction_positive and linestring_index == len(linestrings) - 1:
-                next_linestring = linestrings[linestring_index-1]
-                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
-            elif not actor.coordinates.direction_positive and linestring_index > 0:
-                next_linestring = linestrings[linestring_index-1]
-            elif not actor.coordinates.direction_positive and linestring_index == 0:
-                next_linestring = linestrings[linestring_index + 1]
-                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+            # Use intersection if possible
+            intersections = map.intersections_collection.find_one({"id": actor.coordinates.street_id})
+            cross_on_intersection = False
+            if len(intersections["intersections"]) > 0:
+                for intersection in intersections["intersections"]:
+                    if abs(actor.coordinates.x - intersection["coordinates"][1]) < 0.00001 and abs(actor.coordinates.y - intersection["coordinates"][0]) < 0.00001:
+                        actor.coordinates.direction_checkmark_x = intersection["coordinates"][1]
+                        actor.coordinates.direction_checkmark_y = intersection["coordinates"][0]
+                        cross_on_intersection = True
+                        actor.coordinates.street_id = intersection["id"]
+                        next_street = map.transportations_collection.find_one({"id": intersection["id"]})
+                        next_street_linestrings = next_street["geometry"]["coordinates"]
+                        next_linestring = [100, 100]
+                        for linestring in next_street_linestrings:
+                            if abs(linestring[0] - actor.coordinates.x) + abs(linestring[1] - actor.coordinates.y) < \
+                                abs(next_linestring[0] - actor.coordinates.x) + abs(next_linestring[1] - actor.coordinates.y):
+                                next_linestring = [linestring[0], linestring[1]]
+                            break
+
+            # Walk on street
+            if not cross_on_intersection:
+                if actor.coordinates.direction_positive and linestring_index < len(linestrings) - 1:
+                    next_linestring = linestrings[linestring_index+1]
+                elif actor.coordinates.direction_positive and linestring_index == len(linestrings) - 1:
+                    next_linestring = linestrings[linestring_index-1]
+                    actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+                elif not actor.coordinates.direction_positive and linestring_index > 0:
+                    next_linestring = linestrings[linestring_index-1]
+                elif not actor.coordinates.direction_positive and linestring_index == 0:
+                    next_linestring = linestrings[linestring_index + 1]
+                    actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+
             actor.coordinates.previous_checkpoint_x = actor.coordinates.direction_checkmark_x
             actor.coordinates.previous_checkpoint_y = actor.coordinates.direction_checkmark_y
             actor.coordinates.direction_checkmark_x = next_linestring[0]
             actor.coordinates.direction_checkmark_y = next_linestring[1]
 
+        # Walking speed
         coordinate_gap_x = abs(actor.coordinates.previous_checkpoint_x - actor.coordinates.direction_checkmark_x)
         coordinate_gap_y = abs(actor.coordinates.previous_checkpoint_y - actor.coordinates.direction_checkmark_y)
 
+        # Walk
         if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
             actor.coordinates.x += (coordinate_gap_x / 5)
             if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
