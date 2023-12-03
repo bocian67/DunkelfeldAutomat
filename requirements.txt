@@ -14,3 +14,4 @@ folium
 matplotlib
 mapclassify
 folium
+geojson_utils
