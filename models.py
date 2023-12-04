@@ -2,12 +2,14 @@ class Actor:
     def __init__(self, actor_coordinate):
         self.coordinates = actor_coordinate
         self.z = 0
+        self.color = "white"
 
 
 class Criminal(Actor):
     def __init__(self, actor_coordinate, z):
         super().__init__(actor_coordinate)
         self.z = z
+        self.color = "red"
 
     def increase_criminal(self):
         self.z += 1
@@ -23,6 +25,7 @@ class Police(Actor):
     def __init__(self, coordinates, z):
         super().__init__(coordinates)
         self.z = z
+        self.color = "blue"
 
 
 class ActorCoordinate:
