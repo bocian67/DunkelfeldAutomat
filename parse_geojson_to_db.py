@@ -3,11 +3,10 @@ import geopandas as gpd
 from database import get_database
 from geojson_utils import linestrings_intersect
 
-
 def write_to_db():
     db = get_database()
-    collection = db["transportations"]
-    with open("tiles/mittweida.transportation.geojson", encoding="utf-8") as f:
+    collection = db["transportations-name"]
+    with open("tiles/mittweida.transportation_name.geojson", encoding="utf-8") as f:
         transportations = json.load(f)
     # transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
 
@@ -18,8 +17,8 @@ def write_to_db():
 
 def find_intersections():
     db = get_database()
-    transportation_collection = db["transportations"]
-    intersection_collection = db["intersections"]
+    transportation_collection = db["transportations-name"]
+    intersection_collection = db["intersections-name"]
     max_docs = transportation_collection.count_documents({})
     for source_index in range(1, max_docs+1):
         print(f"{source_index}/{max_docs}")
@@ -40,5 +39,5 @@ def find_intersections():
 
 
 if __name__ == "__main__":
-    #write_to_db()
+    write_to_db()
     find_intersections()
