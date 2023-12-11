@@ -632,7 +632,11 @@ def generate_info_table():
 def data_to_df(data):
     data_attrs = []
     for item in data:
-        item_vars = {"z": item.z, "color": item.color} | vars(item.coordinates)
+        item_vars = {
+                        "z": item.z,
+                        "color": item.color,
+                        "next": item.navigation_route.route[item.navigation_route.step]
+                    } | vars(item.coordinates)
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
 
@@ -650,16 +654,6 @@ if __name__ == "__main__":
 
     data = map.get_actors()
     data_df = data_to_df(data)
-    # data_df = pd.DataFrame([vars(f) for f in data if f.z != 100])
-    """
-        fig = go.Figure(go.Densitymapbox(
-            lat=data_df.x,
-            lon=data_df.y,
-            z=data_df.z,
-            radius=15,
-            # colorscale=[[0, 'rgb(0,0,255)'],[1, 'rgb(255,0,0)']]
-        ))
-    """
     fig = go.Figure(go.Scattermapbox(
         lat=data_df.y.values,
         lon=data_df.x.values,
@@ -667,7 +661,9 @@ if __name__ == "__main__":
         marker=go.scattermapbox.Marker(
             size=12,
             color=data_df.color.values
-        )
+        ),
+        hoverinfo="lat+lon+text",
+        hovertext=data_df.next.values
     ))
 
     fig.update_layout(
@@ -688,11 +684,6 @@ if __name__ == "__main__":
     )
     fig['layout']['uirevision'] = "foo"
     fig.layout.hovermode = "closest"
-
-
-
-    # fig.show()
-    # fig_widget = go.FigureWidget(fig)
 
     dash_app = Dash(__name__, server=app)
     dash_app.layout = html.Div([
@@ -740,6 +731,3 @@ if __name__ == "__main__":
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
-
-    # Flask app
-    # app.run(debug=True, host='0.0.0.0', port=5000)
