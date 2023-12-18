@@ -39,7 +39,6 @@ global fig
 
 
 class Map:
-    global board
     global c
     global iteration
     global is_running
@@ -54,16 +53,14 @@ class Map:
         self.all_intersections = list(self.intersections_collection.find({}))
         self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
-        self.grid_length = 8
         self.step_size_divider = 2
         self.seed = 123456789
         self.new_logs = []
+        self.actor_count = 40
+        self.actors = []
 
     def get_actors(self):
-        actors = []
-        for row in board:
-            actors.extend(row)
-        return actors
+        return self.actors
 
     def terminate(self):
         global is_running
@@ -71,38 +68,25 @@ class Map:
         sleep(1)
 
     def init_board(self):
-        global board
         global iteration
         iteration = 0
-        board = []
-        actor_index = 0
-        for column_index in range(0, self.grid_length):
-            column = []
-            for row_index in range(0, self.grid_length):
-                # coords = get_coordinate_for_field(row_index, column_index)
-                coords = self.get_random_actor_coordinate()
-                column.append(Criminal(actor_index, coords, 0))
-                actor_index += 1
-            board.append(column)
+        self.actors.clear()
+        for i in range(0, self.actor_count):
+            # coords = get_coordinate_for_field(row_index, column_index)
+            coords = self.get_random_actor_coordinate()
+            self.actors.append(Criminal(i, coords, 0))
 
     def random_fill(self, criminal_probability=30, police_probability=20):
-        global board
         global c
         c = 0
-        actor_index = 0
 
-        actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
-            delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in
-            range(0, len(board) * len(board)))
+        self.actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+            delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in range(0, self.actor_count))
 
-        for col in range(len(board)):
-            for row in range(len(board)):
-                # coords = self.get_random_actor_coordinate()
-                actor = actors[((len(board) * row) + col)]
-                if isinstance(actor, Criminal):
-                    c += 1
-                board[row][col] = actor
-                actor_index += 1
+        for actor_index, actor in enumerate(self.actors):
+            # coords = self.get_random_actor_coordinate()
+            if isinstance(actor, Criminal):
+                c += 1
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
@@ -111,11 +95,10 @@ class Map:
         random.seed(map.seed)
         map.seed += 1
         random_probability = random.random()
-        max_actors = self.grid_length * self.grid_length
-        if actor_index < int((criminal_probability / 100) * max_actors):
+        if actor_index < int((criminal_probability / 100) * self.actor_count):
             # actor = Criminal(coords, 1)
             actor = Criminal(actor_index, None, 1)
-        elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * max_actors):
+        elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * self.actor_count):
             # actor = Police(coords, -1)
             actor = Police(actor_index, None, -1)
         else:
@@ -192,6 +175,23 @@ class Map:
         return actor_pathfinding_from_db(random_origin_street_index, random_origin_linestring_checkpoint,
                                          random_destination_street_index, random_destination_linestring_checkpoint)
 
+    def generate_info_table(self):
+        actor = 0
+        police = 0
+        criminal = 0
+        for value in self.actors:
+            if isinstance(value, Criminal):
+                criminal += 1
+            elif isinstance(value, Actor):
+                actor += 1
+            elif isinstance(value, Police):
+                police += 1
+        return html.Div(children=[
+            html.Div(children=["Actors: " + str(actor)]),
+            html.Div(children=["Criminals: " + str(criminal)]),
+            html.Div(children=["Police: " + str(police)])
+        ])
+
 
 def count_criminal(data):
     global c
@@ -235,7 +235,7 @@ def update_graph_live(n, n_button, old_log_children):
     data_map.lon = data_df.x.values
     data_map.marker.color = data_df.color.values
     fig['layout']['uirevision'] = "foo"
-    children = generate_info_table()
+    children = map.generate_info_table()
     new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
     map.new_logs.clear()
     return fig, children, new_log_children
@@ -270,7 +270,7 @@ def actor_run_path(actor):
             if actor.navigation_route.step >= len(actor.navigation_route.streets):
                 # set other route
                 path = None
-                while path == None:
+                while path is None:
                     path = map.get_random_actor_path(actor.navigation_route.streets[-1],
                                                      [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path, True)
@@ -453,25 +453,6 @@ def init_random_using_slider(button_value, criminal_value, police_value, change_
         # thread = Thread(target=map.start_simulation)
         # thread.start()
     return 0
-
-
-def generate_info_table():
-    actor = 0
-    police = 0
-    criminal = 0
-    for row in board:
-        for value in row:
-            if isinstance(value, Criminal):
-                criminal += 1
-            elif isinstance(value, Actor):
-                actor += 1
-            elif isinstance(value, Police):
-                police += 1
-    return html.Div(children=[
-        html.Div(children=["Actors: " + str(actor)]),
-        html.Div(children=["Criminals: " + str(criminal)]),
-        html.Div(children=["Police: " + str(police)])
-    ])
 
 
 def data_to_df(data):
