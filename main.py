@@ -13,9 +13,10 @@ from flask_cors import CORS, cross_origin
 from joblib import Parallel, delayed
 from termcolor import colored
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, Output, Input, callback
+from dash import Dash, dcc, html, Output, Input, callback, State
 
 from database import get_database
+from models.ActorLog import ActorLog
 from models.actors import *
 from helpers import get_closest_intersection, get_closest_street_point_index
 from models.navigation import NavigationRoute
@@ -55,9 +56,10 @@ class Map:
         self.all_intersections = list(self.intersections_collection.find({}))
         self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
-        self.grid_length = 1
+        self.grid_length = 4
         self.step_size_divider = 2
-        self.seed = 535353
+        self.seed = 123456789
+        self.new_logs = []
 
     def get_actors(self):
         actors = []
@@ -75,12 +77,14 @@ class Map:
         global iteration
         iteration = 0
         board = []
+        actor_index = 0
         for column_index in range(0, self.grid_length):
             column = []
             for row_index in range(0, self.grid_length):
                 #coords = get_coordinate_for_field(row_index, column_index)
                 coords = self.get_random_actor_coordinate()
-                column.append(Criminal(coords, 0))
+                column.append(Criminal(actor_index, coords, 0))
+                actor_index += 1
             board.append(column)
 
     def show_terminal_board(self):
@@ -124,13 +128,13 @@ class Map:
                         value = board[row][col]
                         criminal_neighbor_count = self.count_criminal(row, col)
                         if (criminal_neighbor_count == 3) and isinstance(value, Actor):
-                            value = Criminal(value.x, value.y, 1)
+                            value = Criminal(value.id, value.x, value.y, 1)
                             new_board[row][col] = value
                             c += 1
                             no_change = False
                         elif (((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and
                               isinstance(value, Criminal)):
-                            value = Actor(value.x, value.y)
+                            value = Actor(value.id, value.x, value.y)
                             new_board[row][col] = value
                             c -= 1
                             no_change = False
@@ -162,7 +166,7 @@ class Map:
         c = 0
         actor_index = 0
 
-        actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(self.create_random_actor_with_path)(actor_index, criminal_probability, police_probability) for i in range(0, len(board) * len(board)))
+        actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in range(0, len(board) * len(board)))
 
         for col in range(len(board)):
             for row in range(len(board)):
@@ -186,14 +190,14 @@ class Map:
         max_actors = self.grid_length * self.grid_length
         if actor_index < int((criminal_probability / 100) * max_actors):
             # actor = Criminal(coords, 1)
-            actor = Criminal(None, 1)
+            actor = Criminal(actor_index, None, 1)
         elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * max_actors):
             # actor = Police(coords, -1)
-            actor = Police(None, -1)
+            actor = Police(actor_index, None, -1)
         else:
             # actor = Actor(coords)
-            actor = Actor(None)
-        actor.set_navigation_route(path)
+            actor = Actor(actor_index, None)
+        actor.set_navigation_route(path, False)
         return actor
 
     def start_sim_with_random(self):
@@ -255,7 +259,7 @@ class Map:
             random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
             random_origin_linestring_checkpoint = origin_geometry["coordinates"][random_origin_linestring_checkpoint_index]
             routes = list(self.navigation_collection.find({"start": random_origin_street_index}))
-            if routes is not None:
+            if routes is not None and len(routes) > 0:
                 random.seed(map.seed)
                 map.seed += 1
                 route = routes[random.randint(0, len(routes) - 1)]
@@ -339,8 +343,11 @@ def get_coordinate_for_field(row, column) -> (float, float):
 # manager=background_callback_manager)
 @callback(Output('graph', 'figure'),
           Output('info', 'children'),
-          Input('interval-component', 'n_intervals'))
-def update_graph_live(n):
+          Output('log-container', 'children'),
+          Input('interval-component', 'n_intervals'),
+          Input("next-button", "n_clicks"),
+          State('log-container', 'children'))
+def update_graph_live(n, n_button, old_log_children):
     global fig
     data_map = fig.data[0]
     data = map.get_actors()
@@ -353,7 +360,9 @@ def update_graph_live(n):
     data_map.marker.color = data_df.color.values
     fig['layout']['uirevision'] = "foo"
     children = generate_info_table()
-    return fig, children
+    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
+    map.new_logs.clear()
+    return fig, children, new_log_children
 
 
 def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
@@ -388,11 +397,15 @@ def actor_run_path(actor):
                 while path == None:
                     path = map.get_random_actor_path(actor.navigation_route.streets[-1],
                                                      [actor.coordinates.x, actor.coordinates.y])
-                actor.set_navigation_route(path)
+                actor.set_navigation_route(path, True)
                 actor.set_navigation_step(0)
+                map.new_logs.append(ActorLog(actor.id, actor.color, "New Path", f"{actor.coordinates.x}, {actor.coordinates.y}"))
                 return actor
             else:
                 actor.set_navigation_step(actor.navigation_route.step)
+                street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                map.new_logs.append(ActorLog(actor.id, actor.color, "Next Navigation Point", f"{street_name}"))
 
         street = map.transportations_collection.find_one({"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
         linestrings = street["geometry"]["coordinates"]
@@ -404,6 +417,11 @@ def actor_run_path(actor):
         else:
             direction_linestrings = [linestrings[linestring_index + 1], linestrings[linestring_index - 1]]
             next_linestring = direction_linestrings[get_closest_street_point_index(actor.navigation_route.get_route(), direction_linestrings)]
+
+        follow_linestring_or_destination = [next_linestring, actor.navigation_route.get_route()]
+        next_linestring = follow_linestring_or_destination[get_closest_street_point_index(
+            [actor.coordinates.x, actor.coordinates.y], follow_linestring_or_destination)
+        ]
 
         actor.coordinates.previous_checkmark_x = actor.coordinates.x
         actor.coordinates.previous_checkmark_y = actor.coordinates.y
@@ -582,7 +600,7 @@ def data_to_df(data):
         item_vars = {
                         "z": item.z,
                         "color": item.color,
-                        "next": item.navigation_route.route[str(item.navigation_route.step)]
+                        "id": item.id
                     } | vars(item.coordinates)
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
@@ -610,7 +628,7 @@ if __name__ == "__main__":
             color=data_df.color.values
         ),
         hoverinfo="lat+lon+text",
-        hovertext=data_df.next.values
+        hovertext=data_df.id
     ))
 
     fig.update_layout(
@@ -669,12 +687,22 @@ if __name__ == "__main__":
 
             html.Button(id='submit-button', children='Submit'),
         ]),
-        dcc.Graph(figure=fig, id='graph', style={"height": "100vh"}),
+        html.Div(style={"display": "flex", "flex-direction": "row", "height": "100vh"}, children=[
+            dcc.Graph(figure=fig, id='graph', style={"flex": "5"}),
+            html.Div(id="log-container",
+                     style={"padding":"10px",
+                            "display": "flex",
+                            "overflow": "scroll",
+                            "flex": "1",
+                            "flex-direction": "column-reverse"},
+                     children=[html.P("Start of the logs")])
+        ]),
         dcc.Interval(
             id='interval-component',
-            interval=2 * 500,  # in milliseconds
+            interval=200 * 500,  # in milliseconds
             n_intervals=0
-        )
+        ),
+        html.Button("Next Step", id="next-button")
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
