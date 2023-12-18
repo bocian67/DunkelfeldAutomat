@@ -56,7 +56,7 @@ class Map:
         self.all_intersections = list(self.intersections_collection.find({}))
         self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
-        self.grid_length = 4
+        self.grid_length = 8
         self.step_size_divider = 2
         self.seed = 123456789
         self.new_logs = []
@@ -699,7 +699,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=200 * 500,  # in milliseconds
+            interval=2 * 500,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button")
