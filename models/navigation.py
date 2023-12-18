@@ -18,5 +18,8 @@ class NavigationRoute:
 
     def add_street(self, street):
         self.streets.append(street["id"])
-        self.route[self.step] = street["coordinates"]
+        self.route[str(self.step)] = street["coordinates"]
         self.step += 1
+
+    def get_route(self):
+        return self.route[str(self.step)]

@@ -53,6 +53,7 @@ class Map:
         self.transportations_collection = self.db["transportations-name"]
         self.intersections_collection = self.db["intersections-name"]
         self.all_intersections = list(self.intersections_collection.find({}))
+        self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
         self.grid_length = 1
         self.step_size_divider = 2
@@ -237,38 +238,38 @@ class Map:
 
     def get_random_actor_path(self, origin_street_index = None, origin_coordinates = None):
         max_docs = self.transportations_collection.count_documents({})
-        if origin_street_index is None and origin_coordinates is None:
-            while True:
+        route = None
+
+        while True:
+            if origin_street_index is not None and origin_coordinates is not None:
+                random_origin_street_index = origin_street_index
+                random_origin_linestring_checkpoint = origin_coordinates
+            else:
                 random.seed(map.seed)
                 map.seed += 1
                 random_origin_street_index = random.randint(1, max_docs - 1)
-                street = self.transportations_collection.find_one({"id": random_origin_street_index})
-                origin_geometry = street["geometry"]
-                if origin_geometry["type"] == "LineString":
-                    break
-
+            street = self.transportations_collection.find_one({"id": random_origin_street_index})
+            origin_geometry = street["geometry"]
             random.seed(map.seed)
             map.seed += 1
             random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
             random_origin_linestring_checkpoint = origin_geometry["coordinates"][random_origin_linestring_checkpoint_index]
-        else:
-            random_origin_street_index = origin_street_index
-            random_origin_linestring_checkpoint = origin_coordinates
-        while True:
-            random.seed(map.seed)
-            map.seed += 1
-            random_destination_street_index = random.randint(1, max_docs - 1)
-            street = self.transportations_collection.find_one({"id": random_destination_street_index})
-            destination_geometry = street["geometry"]
-            if destination_geometry["type"] == "LineString":
+            routes = list(self.navigation_collection.find({"start": random_origin_street_index}))
+            if routes is not None:
+                random.seed(map.seed)
+                map.seed += 1
+                route = routes[random.randint(0, len(routes) - 1)]
                 break
 
+        random_destination_street_index = route["streets"][-1]
+        street = self.transportations_collection.find_one({"id": random_destination_street_index})
+        destination_geometry = street["geometry"]
         random.seed(map.seed)
         map.seed += 1
         random_destination_linestring_checkpoint_index = random.randint(0, len(destination_geometry["coordinates"]) - 1)
         random_destination_linestring_checkpoint = destination_geometry["coordinates"][random_destination_linestring_checkpoint_index]
 
-        return actor_pathfinding(random_origin_street_index, random_origin_linestring_checkpoint, random_destination_street_index, random_destination_linestring_checkpoint)
+        return actor_pathfinding_from_db(random_origin_street_index, random_origin_linestring_checkpoint, random_destination_street_index, random_destination_linestring_checkpoint)
 
 
 
@@ -355,8 +356,7 @@ def update_graph_live(n):
     return fig, children
 
 
-def actor_pathfinding(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
-    found_connections = False
+def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
     # search for path with intersections
     best_connection = None
     origin_road_navigation = NavigationRoute()
@@ -364,88 +364,35 @@ def actor_pathfinding(origin_street_id, origin_coordinates, destination_street_i
     origin_road_navigation.add_street({"id": origin_street_id, "coordinates": origin_coordinates})
     destination_road_navigation.add_street({"id": destination_street_id, "coordinates": destination_coordinates})
     connections_from_origin = [origin_road_navigation]
-    connections_from_destination = [destination_road_navigation]
     if origin_street_id == destination_street_id:
-        found_connections = True
         connections_from_origin[0].add_street({"id": destination_street_id, "coordinates": destination_coordinates})
         best_connection = connections_from_origin[0]
-    # add all roads if
-    while not found_connections:
-        if len(connections_from_origin) == 0:
-            break
-        origin_no_endpoint_street_indexes = []
-        origin_connections_to_append = []
-        for navigation_route_index, navigation_route in enumerate(connections_from_origin):
-            last_road = navigation_route.streets[-1]
-            all_connections_of_road = find_all_connections(last_road)
-            if len(navigation_route.streets) > 1:
-                all_connections_of_road = [i for i in all_connections_of_road if i["id"] != navigation_route.streets[-2]]
-            for new_road in all_connections_of_road:
-                new_path = copy.deepcopy(navigation_route)
-                new_path.add_street(new_road)
-                origin_connections_to_append.append(new_path)
-                if new_road["id"] == destination_street_id:
-                    new_path.add_street({"id": new_road["id"], "coordinates": destination_coordinates})
-                    best_connection = new_path
-                    found_connections = True
-                    break
-
-            origin_no_endpoint_street_indexes.append(navigation_route_index)
-            if found_connections:
-                break
-
-        destination_no_endpoint_street_indexes = []
-        destination_connections_to_append = []
-        for navigation_route_index, navigation_route in enumerate(connections_from_destination):
-            last_road = navigation_route.streets[-1]
-            all_connections_of_road = find_all_connections(last_road)
-            if len(navigation_route.streets) > 1:
-                all_connections_of_road = [i for i in all_connections_of_road if i["id"] != navigation_route.streets[-2]]
-            for new_road in all_connections_of_road:
-                new_path = copy.deepcopy(navigation_route)
-                new_path.add_street(new_road)
-                destination_connections_to_append.append(new_path)
-
-                for new_origin_connection in origin_connections_to_append:
-                    if new_road["id"] == new_origin_connection.streets[-1]:
-                        for index in range(len(new_road) - 1, 0):
-                            new_origin_connection.add_street({"id": new_path.streets[index], "coordinates": new_path.route[index]})
-                        best_connection = new_origin_connection
-                        found_connections = True
-                        break
-
-            destination_no_endpoint_street_indexes.append(navigation_route_index)
-            if found_connections:
-                break
-
-        origin_no_endpoint_street_indexes.sort(reverse=True)
-        for no_endpoint_street_index in origin_no_endpoint_street_indexes:
-            connections_from_origin.pop(no_endpoint_street_index)
-        connections_from_origin += origin_connections_to_append
-
-        destination_no_endpoint_street_indexes.sort(reverse=True)
-        for no_endpoint_street_index in destination_no_endpoint_street_indexes:
-            connections_from_destination.pop(no_endpoint_street_index)
-        connections_from_destination += destination_connections_to_append
+    else:
+        route = map.navigation_collection.find_one({"start": origin_street_id, "end": destination_street_id})
+        if route is not None:
+            best_connection = NavigationRoute()
+            best_connection.route = route["route"]
+            best_connection.streets = route["streets"]
 
     return best_connection
 
 
 def actor_run_path(actor):
     if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
-        if actor.coordinates.x == actor.navigation_route.route[actor.navigation_route.step][0] and \
-                actor.coordinates.y == actor.navigation_route.route[actor.navigation_route.step][1]:
+        navigation_route = actor.navigation_route.get_route()
+        if actor.coordinates.x == navigation_route[0] and actor.coordinates.y == navigation_route[1]:
             actor.navigation_route.step += 1
-            if actor.navigation_route.step <= len(actor.navigation_route.streets) - 1:
-                actor.set_navigation_step(actor.navigation_route.step)
-            else:
+            if actor.navigation_route.step >= len(actor.navigation_route.streets):
                 # set other route
                 path = None
                 while path == None:
-                    path = map.get_random_actor_path(actor.navigation_route.streets[actor.navigation_route.step - 1], [actor.coordinates.x, actor.coordinates.y])
+                    path = map.get_random_actor_path(actor.navigation_route.streets[-1],
+                                                     [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path)
                 actor.set_navigation_step(0)
                 return actor
+            else:
+                actor.set_navigation_step(actor.navigation_route.step)
 
         street = map.transportations_collection.find_one({"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
         linestrings = street["geometry"]["coordinates"]
@@ -456,7 +403,7 @@ def actor_run_path(actor):
             next_linestring = linestrings[-2]
         else:
             direction_linestrings = [linestrings[linestring_index + 1], linestrings[linestring_index - 1]]
-            next_linestring = direction_linestrings[get_closest_street_point_index(actor.navigation_route.route[actor.navigation_route.step], direction_linestrings)]
+            next_linestring = direction_linestrings[get_closest_street_point_index(actor.navigation_route.get_route(), direction_linestrings)]
 
         actor.coordinates.previous_checkmark_x = actor.coordinates.x
         actor.coordinates.previous_checkmark_y = actor.coordinates.y
@@ -635,7 +582,7 @@ def data_to_df(data):
         item_vars = {
                         "z": item.z,
                         "color": item.color,
-                        "next": item.navigation_route.route[item.navigation_route.step]
+                        "next": item.navigation_route.route[str(item.navigation_route.step)]
                     } | vars(item.coordinates)
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)

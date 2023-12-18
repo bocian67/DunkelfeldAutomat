@@ -8,14 +8,14 @@ class Actor:
     def set_navigation_route(self, navigation_route):
         self.navigation_route = navigation_route
         self.navigation_route.step = 0
-        destination_route = self.navigation_route.route[0]
+        destination_route = self.navigation_route.get_route()
         self.coordinates = ActorCoordinate(self.navigation_route.streets[self.navigation_route.step], True,
                                            destination_route[0], destination_route[1], destination_route[0],
                                            destination_route[1], destination_route[0], destination_route[1])
 
     def set_navigation_step(self, navigation_step):
             self.navigation_route.step = navigation_step
-            destination_route = self.navigation_route.route[self.navigation_route.step]
+            destination_route = self.navigation_route.route[str(self.navigation_route.step)]
             self.coordinates = ActorCoordinate(
                 self.navigation_route.streets[self.navigation_route.step],
                 True,
