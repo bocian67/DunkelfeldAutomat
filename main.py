@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import random
 import sys
+from enum import Enum, auto
 from time import sleep
 
 import pandas as pd
@@ -16,7 +17,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, Output, Input, callback, State
 
 from database import get_database
-from models.ActorLog import ActorLog, ActorLogAction
+from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
 from helpers import get_closest_intersection, get_closest_street_point_index
 from models.navigation import NavigationRoute
@@ -37,6 +38,8 @@ global thread
 global map
 global fig
 
+class Events(Enum):
+    ROBBING=auto()
 
 class Map:
     global c
@@ -58,9 +61,10 @@ class Map:
         self.new_logs = []
         self.actor_count = 40
         self.actors = []
-
-    def get_actors(self):
-        return self.actors
+        self.dashboard = {
+            str(Events.ROBBING): 0
+        }
+        self.additionals = []
 
     def terminate(self):
         global is_running
@@ -182,14 +186,15 @@ class Map:
         for value in self.actors:
             if isinstance(value, Criminal):
                 criminal += 1
-            elif isinstance(value, Actor):
-                actor += 1
             elif isinstance(value, Police):
                 police += 1
+            elif isinstance(value, Actor):
+                actor += 1
         return html.Div(children=[
             html.Div(children=["Actors: " + str(actor)]),
+            html.Div(children=["Police: " + str(police)]),
             html.Div(children=["Criminals: " + str(criminal)]),
-            html.Div(children=["Police: " + str(police)])
+            html.Div(children=["Actors Robbed: " + str(self.dashboard[str(Events.ROBBING)])])
         ])
 
 
@@ -212,33 +217,6 @@ def get_coordinate_for_field(row, column) -> (float, float):
     x = bounds_mittweida["lat_min"] + row * x_step
     y = bounds_mittweida["lon_min"] + column * y_step
     return x, y
-
-
-# background=True,
-# manager=background_callback_manager)
-@callback(Output('graph', 'figure'),
-          Output('info', 'children'),
-          Output('log-container', 'children'),
-          Input('interval-component', 'n_intervals'),
-          Input("next-button", "n_clicks"),
-          State('log-container', 'children'))
-def update_graph_live(n, n_button, old_log_children):
-    global fig
-    data_map = fig.data[0]
-    data = map.get_actors()
-    # data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
-    data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
-        delayed(actor_run_path)(actor) for actor in data)
-    data_df = data_to_df(data)
-
-    data_map.lat = data_df.y.values
-    data_map.lon = data_df.x.values
-    data_map.marker.color = data_df.color.values
-    fig['layout']['uirevision'] = "foo"
-    children = map.generate_info_table()
-    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
-    map.new_logs.clear()
-    return fig, children, new_log_children
 
 
 def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
@@ -282,7 +260,7 @@ def actor_run_path(actor):
                 actor.set_navigation_step(actor.navigation_route.step)
                 street_id = actor.navigation_route.streets[actor.navigation_route.step]
                 street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
-                map.new_logs.append(ActorLog(actor.id, actor.color, ActorLogAction.NEXT_NAVIGATION_POINT, f"{street_name}"))
+                map.new_logs.append(ActorLog(actor.id, actor.color, ActorLogAction.NEXT_NAVIGATION_POINT, street_name))
 
         street = map.transportations_collection.find_one(
             {"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
@@ -433,6 +411,61 @@ def actor_run_street(actor):
     return actor
 
 
+def simulate_actor_actions(actor_id, actor):
+    if isinstance(actor, Criminal):
+        for other_actor_id, other_actor in enumerate(map.actors):
+            if actor_id == other_actor.id or type(other_actor) is not Actor:
+                continue
+
+            if actor.can_touch_actor(other_actor):
+                street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                map.new_logs.append(ActorEventLog(actor_id, ActorLogAction.ROBBING, street_name, other_actor_id))
+                map.dashboard[str(Events.ROBBING)] += 1
+                map.additionals.append([actor.coordinates.x, actor.coordinates.y])
+    return actor
+
+
+
+
+# background=True,
+# manager=background_callback_manager)
+@callback(Output('graph', 'figure'),
+          Output('info', 'children'),
+          Output('log-container', 'children'),
+          Input('interval-component', 'n_intervals'),
+          Input("next-button", "n_clicks"),
+          State('log-container', 'children'))
+def update_graph_live(n, n_button, old_log_children):
+    global fig
+    map.additionals.clear()
+    data_map = fig.data[0]
+    # data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
+    actors = map.actors
+    actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+        delayed(actor_run_path)(actor) for actor in actors)
+    actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+        delayed(simulate_actor_actions)(actor_id, actor) for actor_id, actor in enumerate(actors))
+    data_df = actors_to_df(actors)
+    additional_data = additionals_to_df(map.additionals)
+
+    data_map.lat = data_df.y.values
+    data_map.lon = data_df.x.values
+    data_map.marker.color = data_df.color.values
+    additional_map = fig.data[1]
+    if len(map.additionals) > 0:
+        additional_map.lat = additional_data.y.values
+        additional_map.lon = additional_data.x.values
+    else:
+        additional_map.lat = []
+        additional_map.lon = []
+    fig['layout']['uirevision'] = "foo"
+    children = map.generate_info_table()
+    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
+    map.new_logs.clear()
+    return fig, children, new_log_children
+
+
 @callback(Output('submit-button', 'n_clicks'),
           Input('submit-button', 'n_clicks'),
           Input('criminal-slider', 'value'),
@@ -455,14 +488,22 @@ def init_random_using_slider(button_value, criminal_value, police_value, change_
     return 0
 
 
-def data_to_df(data):
+def actors_to_df(data):
     data_attrs = []
     for item in data:
         item_vars = {
-                        "z": item.z,
-                        "color": item.color,
-                        "id": item.id
-                    } | vars(item.coordinates)
+            "z": item.z,
+            "color": item.color,
+            "id": str(item.id)
+        } | vars(item.coordinates)
+        data_attrs.append(item_vars)
+    return pd.DataFrame(data_attrs)
+
+
+def additionals_to_df(data):
+    data_attrs = []
+    for item in data:
+        item_vars = {"x": item[0], "y": item[1]}
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
 
@@ -478,18 +519,35 @@ if __name__ == "__main__":
     map.init_board()
     map.random_fill()
 
-    data = map.get_actors()
-    data_df = data_to_df(data)
+    data = map.actors
+    additional_data = additionals_to_df(map.additionals)
+    data_df = actors_to_df(data)
     fig = go.Figure(go.Scattermapbox(
         lat=data_df.y.values,
         lon=data_df.x.values,
-        mode='markers',
+        mode="markers+text",
         marker=go.scattermapbox.Marker(
             size=12,
             color=data_df.color.values
         ),
-        hoverinfo="lat+lon+text",
-        hovertext=data_df.id
+        text=data_df.id.values,
+        textposition="top center",
+        textfont={
+            "size": 18,
+            "color": "white"
+    },
+        hoverinfo="lat+lon",
+    ))
+
+    fig.add_trace(go.Scattermapbox(
+        lat=[],
+        lon=[],
+        mode="markers",
+        marker=go.scattermapbox.Marker(
+            size=36,
+            color="yellow"
+        ),
+        hoverinfo="none",
     ))
 
     fig.update_layout(
@@ -560,7 +618,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=2 * 500,  # in milliseconds
+            interval=200 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button")

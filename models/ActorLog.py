@@ -20,6 +20,20 @@ class ActorLog:
         ])
 
 
+class ActorEventLog(ActorLog):
+    def __init__(self, actor_id, action, location, other_actor_id):
+        super().__init__(actor_id, None, action, location)
+        self.other_actor_id = other_actor_id
+
+    def __str__(self):
+        return f"Actor {self.actor_id} {self.action.value} Actor {self.other_actor_id} on {self.location}"
+
+    def log_to_div(self):
+        return html.Div(style={"background": "yellow"}, children=[
+            html.P(str(self))
+        ])
+
 class ActorLogAction(Enum):
-    NEW_PATH = "New Path"
-    NEXT_NAVIGATION_POINT = "Next Navigation Point"
+    NEW_PATH = "uses new path"
+    NEXT_NAVIGATION_POINT = "sets next navigation point"
+    ROBBING = "robbed"

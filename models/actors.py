@@ -36,6 +36,12 @@ class Actor:
                 self.coordinates.y
             )
 
+    def can_touch_actor(self, destination_actor):
+        distance = abs(self.coordinates.x - destination_actor.coordinates.x) + abs(self.coordinates.y - destination_actor.coordinates.y)
+        if distance <= 0.00003:
+            return True
+        return False
+
 
 class Criminal(Actor):
     def __init__(self, id, actor_coordinate, z):
