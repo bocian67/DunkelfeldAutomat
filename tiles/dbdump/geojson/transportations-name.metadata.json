@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"ee445be70a9c43f69ac8eca74cfb623c","collectionName":"transportations-name","type":"collection"}

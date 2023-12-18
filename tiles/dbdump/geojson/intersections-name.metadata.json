@@ -1,0 +1,1 @@
+{"indexes":[{"v":{"$numberInt":"2"},"key":{"_id":{"$numberInt":"1"}},"name":"_id_"}],"uuid":"70c55a7f31dc4e718927b76d01e49496","collectionName":"intersections-name","type":"collection"}

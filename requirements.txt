@@ -16,3 +16,4 @@ mapclassify
 folium
 geojson_utils
 dash[diskcache]
+joblib

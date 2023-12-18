@@ -1,28 +1,25 @@
 # -*- coding: utf-8 -*-
 import copy
 import json
+import multiprocessing
 import os
 import random
 import sys
-from os import system, name
-from threading import Thread
 from time import sleep
 
-import numpy as np
-from dash import dash_table
 import pandas as pd
-import plotly.express as px
 from flask import Flask, request
 from flask_cors import CORS, cross_origin
+from joblib import Parallel, delayed
 from termcolor import colored
 import plotly.graph_objects as go
-from random import randrange
-from dash import Dash, dcc, html, Output, Input, callback
+from dash import Dash, dcc, html, Output, Input, callback, State
 
 from database import get_database
-from models import *
-import geopandas as gpd
-from helpers import format_to_coord_list, closest_node, get_closest_intersection, get_closest_street_point_index
+from models.ActorLog import ActorLog
+from models.actors import *
+from helpers import get_closest_intersection, get_closest_street_point_index
+from models.navigation import NavigationRoute
 
 mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
 
@@ -50,15 +47,19 @@ class Map:
     def __init__(self):
         self.db = get_database()
         #self.housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
-        with open("tiles/mittweida.transportation.geojson") as f:
+        with open("tiles/mittweida.transportation_name.geojson") as f:
             self.transportations = json.load(f)
         #self.transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
         #self.transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
-        self.transportations_collection = self.db["transportations"]
-        self.intersections_collection = self.db["intersections"]
+        self.transportations_collection = self.db["transportations-name"]
+        self.intersections_collection = self.db["intersections-name"]
+        self.all_intersections = list(self.intersections_collection.find({}))
+        self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
-        self.grid_length = 10
-        self.step_size_divider = 5
+        self.grid_length = 4
+        self.step_size_divider = 2
+        self.seed = 123456789
+        self.new_logs = []
 
     def get_actors(self):
         actors = []
@@ -76,12 +77,14 @@ class Map:
         global iteration
         iteration = 0
         board = []
+        actor_index = 0
         for column_index in range(0, self.grid_length):
             column = []
             for row_index in range(0, self.grid_length):
-                # coords = get_coordinate_for_field(row_index, column_index)
+                #coords = get_coordinate_for_field(row_index, column_index)
                 coords = self.get_random_actor_coordinate()
-                column.append(Criminal(coords, 0))
+                column.append(Criminal(actor_index, coords, 0))
+                actor_index += 1
             board.append(column)
 
     def show_terminal_board(self):
@@ -125,13 +128,13 @@ class Map:
                         value = board[row][col]
                         criminal_neighbor_count = self.count_criminal(row, col)
                         if (criminal_neighbor_count == 3) and isinstance(value, Actor):
-                            value = Criminal(value.x, value.y, 1)
+                            value = Criminal(value.id, value.x, value.y, 1)
                             new_board[row][col] = value
                             c += 1
                             no_change = False
                         elif (((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and
                               isinstance(value, Criminal)):
-                            value = Actor(value.x, value.y)
+                            value = Actor(value.id, value.x, value.y)
                             new_board[row][col] = value
                             c -= 1
                             no_change = False
@@ -161,20 +164,41 @@ class Map:
         global board
         global c
         c = 0
+        actor_index = 0
+
+        actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in range(0, len(board) * len(board)))
+
         for col in range(len(board)):
             for row in range(len(board)):
-                #coords = get_coordinate_for_field(row, col)
-                coords = self.get_random_actor_coordinate()
-                random_probability = random.random()
-                if random_probability < criminal_probability / 100:
-                    board[row][col] = Criminal(coords, 1)
+                #coords = self.get_random_actor_coordinate()
+                actor = actors[((len(board) * row) + col)]
+                if isinstance(actor, Criminal):
                     c += 1
-                elif random_probability < (criminal_probability / 100) + (police_probability / 100):
-                    board[row][col] = Police(coords, -1)
-                else:
-                    board[row][col] = Actor(coords)
+                board[row][col] = actor
+                actor_index += 1
 
         self.show_terminal_board()
+
+
+    def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
+        path = None
+        while path == None:
+            path = self.get_random_actor_path()
+        random.seed(map.seed)
+        map.seed += 1
+        random_probability = random.random()
+        max_actors = self.grid_length * self.grid_length
+        if actor_index < int((criminal_probability / 100) * max_actors):
+            # actor = Criminal(coords, 1)
+            actor = Criminal(actor_index, None, 1)
+        elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * max_actors):
+            # actor = Police(coords, -1)
+            actor = Police(actor_index, None, -1)
+        else:
+            # actor = Actor(coords)
+            actor = Actor(actor_index, None)
+        actor.set_navigation_route(path, False)
+        return actor
 
     def start_sim_with_random(self):
         self.init_board()
@@ -187,12 +211,16 @@ class Map:
     def get_random_actor_coordinate(self):
         max_docs = self.transportations_collection.count_documents({})
         while True:
-            random_street_index = random.randint(0, max_docs - 1)
+            random.seed(map.seed)
+            map.seed += 1
+            random_street_index = random.randint(1, max_docs - 1)
             street = self.transportations_collection.find_one({"id": random_street_index})
             geometry = street["geometry"]
             if geometry["type"] == "LineString":
                 break
 
+        random.seed(map.seed)
+        map.seed += 1
         random_linestring_checkpoint_index = random.randint(0, len(geometry["coordinates"]) - 1)
         random_linestring_checkpoint = geometry["coordinates"][random_linestring_checkpoint_index]
         if random_linestring_checkpoint_index > 0:
@@ -209,6 +237,43 @@ class Map:
                                float(random_linestring_checkpoint[1]),
                                float(previous_linestring_checkpoint[0]),
                                float(previous_linestring_checkpoint[1]))
+
+
+
+    def get_random_actor_path(self, origin_street_index = None, origin_coordinates = None):
+        max_docs = self.transportations_collection.count_documents({})
+        route = None
+
+        while True:
+            if origin_street_index is not None and origin_coordinates is not None:
+                random_origin_street_index = origin_street_index
+                random_origin_linestring_checkpoint = origin_coordinates
+            else:
+                random.seed(map.seed)
+                map.seed += 1
+                random_origin_street_index = random.randint(1, max_docs - 1)
+            street = self.transportations_collection.find_one({"id": random_origin_street_index})
+            origin_geometry = street["geometry"]
+            random.seed(map.seed)
+            map.seed += 1
+            random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
+            random_origin_linestring_checkpoint = origin_geometry["coordinates"][random_origin_linestring_checkpoint_index]
+            routes = list(self.navigation_collection.find({"start": random_origin_street_index}))
+            if routes is not None and len(routes) > 0:
+                random.seed(map.seed)
+                map.seed += 1
+                route = routes[random.randint(0, len(routes) - 1)]
+                break
+
+        random_destination_street_index = route["streets"][-1]
+        street = self.transportations_collection.find_one({"id": random_destination_street_index})
+        destination_geometry = street["geometry"]
+        random.seed(map.seed)
+        map.seed += 1
+        random_destination_linestring_checkpoint_index = random.randint(0, len(destination_geometry["coordinates"]) - 1)
+        random_destination_linestring_checkpoint = destination_geometry["coordinates"][random_destination_linestring_checkpoint_index]
+
+        return actor_pathfinding_from_db(random_origin_street_index, random_origin_linestring_checkpoint, random_destination_street_index, random_destination_linestring_checkpoint)
 
 
 
@@ -278,12 +343,16 @@ def get_coordinate_for_field(row, column) -> (float, float):
 # manager=background_callback_manager)
 @callback(Output('graph', 'figure'),
           Output('info', 'children'),
-          Input('interval-component', 'n_intervals'))
-def update_graph_live(n):
+          Output('log-container', 'children'),
+          Input('interval-component', 'n_intervals'),
+          Input("next-button", "n_clicks"),
+          State('log-container', 'children'))
+def update_graph_live(n, n_button, old_log_children):
     global fig
     data_map = fig.data[0]
     data = map.get_actors()
-    data = run_streets(data)
+    #data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
+    data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_path)(actor) for actor in data)
     data_df = data_to_df(data)
 
     data_map.lat = data_df.y.values
@@ -291,101 +360,213 @@ def update_graph_live(n):
     data_map.marker.color = data_df.color.values
     fig['layout']['uirevision'] = "foo"
     children = generate_info_table()
-    return fig, children
+    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
+    map.new_logs.clear()
+    return fig, children, new_log_children
 
-def run_streets(data):
-    for actor in data:
-        street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
+
+def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
+    # search for path with intersections
+    best_connection = None
+    origin_road_navigation = NavigationRoute()
+    destination_road_navigation = NavigationRoute()
+    origin_road_navigation.add_street({"id": origin_street_id, "coordinates": origin_coordinates})
+    destination_road_navigation.add_street({"id": destination_street_id, "coordinates": destination_coordinates})
+    connections_from_origin = [origin_road_navigation]
+    if origin_street_id == destination_street_id:
+        connections_from_origin[0].add_street({"id": destination_street_id, "coordinates": destination_coordinates})
+        best_connection = connections_from_origin[0]
+    else:
+        route = map.navigation_collection.find_one({"start": origin_street_id, "end": destination_street_id})
+        if route is not None:
+            best_connection = NavigationRoute()
+            best_connection.route = route["route"]
+            best_connection.streets = route["streets"]
+
+    return best_connection
+
+
+def actor_run_path(actor):
+    if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
+        navigation_route = actor.navigation_route.get_route()
+        if actor.coordinates.x == navigation_route[0] and actor.coordinates.y == navigation_route[1]:
+            actor.navigation_route.step += 1
+            if actor.navigation_route.step >= len(actor.navigation_route.streets):
+                # set other route
+                path = None
+                while path == None:
+                    path = map.get_random_actor_path(actor.navigation_route.streets[-1],
+                                                     [actor.coordinates.x, actor.coordinates.y])
+                actor.set_navigation_route(path, True)
+                actor.set_navigation_step(0)
+                map.new_logs.append(ActorLog(actor.id, actor.color, "New Path", f"{actor.coordinates.x}, {actor.coordinates.y}"))
+                return actor
+            else:
+                actor.set_navigation_step(actor.navigation_route.step)
+                street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                map.new_logs.append(ActorLog(actor.id, actor.color, "Next Navigation Point", f"{street_name}"))
+
+        street = map.transportations_collection.find_one({"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
         linestrings = street["geometry"]["coordinates"]
-        linestring_index = get_closest_street_point_index([actor.coordinates.direction_checkmark_x, actor.coordinates.direction_checkmark_y], linestrings)
-        if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
-            # Use intersection if possible
-            intersections = map.intersections_collection.find_one({"id": actor.coordinates.street_id})
-            cross_on_intersection = False
-            if len(intersections["intersections"]) > 0:
-                closest_intersection = get_closest_intersection([actor.coordinates.x, actor.coordinates.y], intersections)
-                if (abs(closest_intersection["coordinates"][1] - actor.coordinates.x) < 0.00005
-                        and abs(closest_intersection["coordinates"][0] - actor.coordinates.y) < 0.00005
-                        and random.randint(0, 100) >= map.change_road_possibility):
-                    actor.coordinates.street_id = closest_intersection["id"]
-                    cross_on_intersection = True
-                    # next point on new street (new coordinate 'to')
-                    next_street = map.transportations_collection.find_one({"id": closest_intersection["id"]})
-                    linestrings = next_street["geometry"]["coordinates"]
-                    linestring_index = get_closest_street_point_index(
-                        [closest_intersection["coordinates"][1], closest_intersection["coordinates"][0]], linestrings)
-                    next_linestring = [0, 0]
-                    for linestring in linestrings:
-                        if abs(linestring[0] - actor.coordinates.x) + abs(linestring[1] - actor.coordinates.y) < \
-                            abs(next_linestring[0] - actor.coordinates.x) + abs(next_linestring[1] - actor.coordinates.y):
-                            next_linestring = linestring
+        linestring_index = get_closest_street_point_index([actor.coordinates.x, actor.coordinates.y], linestrings)
+        if linestring_index == 0:
+            next_linestring = linestrings[1]
+        elif linestring_index == len(linestrings) - 1:
+            next_linestring = linestrings[-2]
+        else:
+            direction_linestrings = [linestrings[linestring_index + 1], linestrings[linestring_index - 1]]
+            next_linestring = direction_linestrings[get_closest_street_point_index(actor.navigation_route.get_route(), direction_linestrings)]
 
-                    # nearest intersection starting point (new coordinate 'from')
-                    actor.coordinates.previous_checkpoint_x = linestrings[linestring_index][1]
-                    actor.coordinates.previous_checkpoint_y = linestrings[linestring_index][0]
-                    actor.coordinates.direction_checkmark_x = next_linestring[0]
-                    actor.coordinates.direction_checkmark_y = next_linestring[1]
-                    if next_linestring == [actor.coordinates.direction_checkmark_x, actor.coordinates.direction_checkmark_y]:
-                        cross_on_intersection = False
+        follow_linestring_or_destination = [next_linestring, actor.navigation_route.get_route()]
+        next_linestring = follow_linestring_or_destination[get_closest_street_point_index(
+            [actor.coordinates.x, actor.coordinates.y], follow_linestring_or_destination)
+        ]
 
-            # Walk on street
-            if not cross_on_intersection:
-                if actor.coordinates.direction_positive and linestring_index < len(linestrings) - 1:
-                    next_linestring = linestrings[linestring_index+1]
-                elif actor.coordinates.direction_positive and linestring_index == len(linestrings) - 1:
-                    next_linestring = linestrings[linestring_index-1]
-                    actor.coordinates.direction_positive = not actor.coordinates.direction_positive
-                elif not actor.coordinates.direction_positive and linestring_index > 0:
-                    next_linestring = linestrings[linestring_index-1]
-                elif not actor.coordinates.direction_positive and linestring_index == 0:
-                    next_linestring = linestrings[linestring_index + 1]
-                    actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+        actor.coordinates.previous_checkmark_x = actor.coordinates.x
+        actor.coordinates.previous_checkmark_y = actor.coordinates.y
+        actor.coordinates.direction_checkmark_x = next_linestring[0]
+        actor.coordinates.direction_checkmark_y = next_linestring[1]
 
-                actor.coordinates.previous_checkpoint_x = actor.coordinates.direction_checkmark_x
-                actor.coordinates.previous_checkpoint_y = actor.coordinates.direction_checkmark_y
+    # Walking speed
+    coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
+    coordinate_step_x = coordinate_gap_x / map.step_size_divider
+    coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
+    coordinate_step_y = coordinate_gap_y / map.step_size_divider
+
+    # Walk
+    if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+        actor.coordinates.x += coordinate_step_x
+        if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
+    else:
+        actor.coordinates.x -= coordinate_step_x
+        if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
+
+    if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+        actor.coordinates.y += coordinate_step_y
+        if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
+            actor.coordinates.y = actor.coordinates.direction_checkmark_y
+    else:
+        actor.coordinates.y -= coordinate_step_y
+        if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+            actor.coordinates.y = actor.coordinates.direction_checkmark_y
+
+    return actor
+
+
+def find_all_connections(from_street_id):
+    for i in map.all_intersections:
+        if i["id"] == from_street_id:
+            intersections = i["intersections"]
+            result = []
+            for r in intersections:
+                result.append({"id": r["id"], "coordinates": [r["coordinates"][1], r["coordinates"][0]]})
+            return result
+
+def actor_run_street(actor):
+    street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
+    linestrings = street["geometry"]["coordinates"]
+    linestring_index = get_closest_street_point_index(
+        [actor.coordinates.direction_checkmark_x, actor.coordinates.direction_checkmark_y], linestrings)
+    if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
+        # Use intersection if possible
+        intersections = map.intersections_collection.find_one({"id": actor.coordinates.street_id})
+        cross_on_intersection = False
+        if len(intersections["intersections"]) > 0:
+            closest_intersection = get_closest_intersection([actor.coordinates.x, actor.coordinates.y], intersections)
+            random.seed(map.seed)
+            map.seed += 1
+            if (abs(closest_intersection["coordinates"][1] - actor.coordinates.x) < 0.0001
+                    and abs(closest_intersection["coordinates"][0] - actor.coordinates.y) < 0.0001
+                    and random.randint(0, 100) <= map.change_road_possibility):
+                actor.coordinates.street_id = closest_intersection["id"]
+                cross_on_intersection = True
+                # next point on new street (new coordinate 'to')
+                next_street = map.transportations_collection.find_one({"id": closest_intersection["id"]})
+                linestrings = next_street["geometry"]["coordinates"]
+                linestring_index = get_closest_street_point_index(
+                    [closest_intersection["coordinates"][1], closest_intersection["coordinates"][0]], linestrings)
+                next_linestring = [0, 0]
+                for linestring in linestrings:
+                    if abs(linestring[0] - actor.coordinates.x) + abs(linestring[1] - actor.coordinates.y) < \
+                            abs(next_linestring[0] - actor.coordinates.x) + abs(
+                        next_linestring[1] - actor.coordinates.y):
+                        next_linestring = linestring
+
+                # nearest intersection starting point (new coordinate 'from')
+                actor.coordinates.previous_checkmark_x = linestrings[linestring_index][1]
+                actor.coordinates.previous_checkmark_y = linestrings[linestring_index][0]
                 actor.coordinates.direction_checkmark_x = next_linestring[0]
                 actor.coordinates.direction_checkmark_y = next_linestring[1]
+                random.seed(map.seed)
+                map.seed += 1
+                actor.coordinates.direction_positive = random.randint(0,1) == 0
+                if next_linestring == [actor.coordinates.direction_checkmark_x,
+                                       actor.coordinates.direction_checkmark_y]:
+                    cross_on_intersection = False
 
-        # Walking speed
-        coordinate_gap_x = abs(actor.coordinates.previous_checkpoint_x - actor.coordinates.direction_checkmark_x)
-        coordinate_step_x = coordinate_gap_x / map.step_size_divider
-        coordinate_gap_y = abs(actor.coordinates.previous_checkpoint_y - actor.coordinates.direction_checkmark_y)
-        coordinate_step_y = coordinate_gap_y / map.step_size_divider
+        # Walk on street
+        if not cross_on_intersection:
+            if actor.coordinates.direction_positive and linestring_index < len(linestrings) - 1:
+                next_linestring = linestrings[linestring_index + 1]
+            elif actor.coordinates.direction_positive and linestring_index == len(linestrings) - 1:
+                next_linestring = linestrings[linestring_index - 1]
+                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
+            elif not actor.coordinates.direction_positive and linestring_index > 0:
+                next_linestring = linestrings[linestring_index - 1]
+            elif not actor.coordinates.direction_positive and linestring_index == 0:
+                next_linestring = linestrings[linestring_index + 1]
+                actor.coordinates.direction_positive = not actor.coordinates.direction_positive
 
-        # Walk
+            actor.coordinates.previous_checkmark_x = actor.coordinates.direction_checkmark_x
+            actor.coordinates.previous_checkmark_y = actor.coordinates.direction_checkmark_y
+            actor.coordinates.direction_checkmark_x = next_linestring[0]
+            actor.coordinates.direction_checkmark_y = next_linestring[1]
+
+    # Walking speed
+    coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
+    coordinate_step_x = coordinate_gap_x / map.step_size_divider
+    coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
+    coordinate_step_y = coordinate_gap_y / map.step_size_divider
+
+    # Walk
+    if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+        actor.coordinates.x += coordinate_step_x
+        if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
+    else:
+        actor.coordinates.x -= coordinate_step_x
         if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-            actor.coordinates.x += coordinate_step_x
-            if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
-                actor.coordinates.x = actor.coordinates.direction_checkmark_x
-        else:
-            actor.coordinates.x -= coordinate_step_x
-            if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-                actor.coordinates.x = actor.coordinates.direction_checkmark_x
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
 
+    if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+        actor.coordinates.y += coordinate_step_y
+        if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
+            actor.coordinates.y = actor.coordinates.direction_checkmark_y
+    else:
+        actor.coordinates.y -= coordinate_step_y
         if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-            actor.coordinates.y += coordinate_step_y
-            if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
-                actor.coordinates.y = actor.coordinates.direction_checkmark_y
-        else:
-            actor.coordinates.y -= coordinate_step_y
-            if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-                actor.coordinates.y = actor.coordinates.direction_checkmark_y
+            actor.coordinates.y = actor.coordinates.direction_checkmark_y
 
-    return data
+    return actor
 
 
 @callback(Output('submit-button', 'n_clicks'),
           Input('submit-button', 'n_clicks'),
           Input('criminal-slider', 'value'),
           Input('police-slider', 'value'),
-          Input('road-slider', 'value'))
-def init_random_using_slider(button_value, criminal_value, police_value, change_road_value):
+          Input('road-slider', 'value'),
+          Input('seed_input', 'value'))
+def init_random_using_slider(button_value, criminal_value, police_value, change_road_value, seed_value):
     global thread
     global map
     global is_running
     if button_value:
         if is_running:
             map.terminate()
+        map.seed = seed_value
         map.init_board()
         map.change_road_possibility = change_road_value
         map.random_fill(criminal_value, police_value)
@@ -416,7 +597,11 @@ def generate_info_table():
 def data_to_df(data):
     data_attrs = []
     for item in data:
-        item_vars = {"z": item.z, "color": item.color} | vars(item.coordinates)
+        item_vars = {
+                        "z": item.z,
+                        "color": item.color,
+                        "id": item.id
+                    } | vars(item.coordinates)
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
 
@@ -428,21 +613,12 @@ if __name__ == "__main__":
     os.system('color')
     is_running = False
     map = Map()
+    start_seed = map.seed
     map.init_board()
     map.random_fill()
 
     data = map.get_actors()
     data_df = data_to_df(data)
-    # data_df = pd.DataFrame([vars(f) for f in data if f.z != 100])
-    """
-        fig = go.Figure(go.Densitymapbox(
-            lat=data_df.x,
-            lon=data_df.y,
-            z=data_df.z,
-            radius=15,
-            # colorscale=[[0, 'rgb(0,0,255)'],[1, 'rgb(255,0,0)']]
-        ))
-    """
     fig = go.Figure(go.Scattermapbox(
         lat=data_df.y.values,
         lon=data_df.x.values,
@@ -450,7 +626,9 @@ if __name__ == "__main__":
         marker=go.scattermapbox.Marker(
             size=12,
             color=data_df.color.values
-        )
+        ),
+        hoverinfo="lat+lon+text",
+        hovertext=data_df.id
     ))
 
     fig.update_layout(
@@ -465,17 +643,12 @@ if __name__ == "__main__":
                 "type": "line",
                 "color": "#2e1900",
                 "opacity": 1
-            },
+            }
         ],
         hovermode="closest"
     )
     fig['layout']['uirevision'] = "foo"
     fig.layout.hovermode = "closest"
-
-
-
-    # fig.show()
-    # fig_widget = go.FigureWidget(fig)
 
     dash_app = Dash(__name__, server=app)
     dash_app.layout = html.Div([
@@ -505,17 +678,31 @@ if __name__ == "__main__":
                 value=map.change_road_possibility,
                 id='road-slider'
             ),
+            html.Label("Random seed", htmlFor='seed_input'),
+            dcc.Input(
+                id="seed_input",
+                type="number",
+                value=start_seed,
+            ),
+
             html.Button(id='submit-button', children='Submit'),
         ]),
-        dcc.Graph(figure=fig, id='graph', style={"height": "100vh"}),
+        html.Div(style={"display": "flex", "flex-direction": "row", "height": "100vh"}, children=[
+            dcc.Graph(figure=fig, id='graph', style={"flex": "5"}),
+            html.Div(id="log-container",
+                     style={"padding":"10px",
+                            "display": "flex",
+                            "overflow": "scroll",
+                            "flex": "1",
+                            "flex-direction": "column-reverse"},
+                     children=[html.P("Start of the logs")])
+        ]),
         dcc.Interval(
             id='interval-component',
-            interval=1 * 1000,  # in milliseconds
+            interval=200 * 500,  # in milliseconds
             n_intervals=0
-        )
+        ),
+        html.Button("Next Step", id="next-button")
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
-
-    # Flask app
-    # app.run(debug=True, host='0.0.0.0', port=5000)
