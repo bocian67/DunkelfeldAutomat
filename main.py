@@ -107,7 +107,7 @@ class Map:
             actor = Police(actor_index, None, -1)
         else:
             # actor = Actor(coords)
-            actor = Actor(actor_index, None)
+            actor = Civilian(actor_index, None)
         actor.set_navigation_route(path, False)
         return actor
 
@@ -180,7 +180,7 @@ class Map:
                                          random_destination_street_index, random_destination_linestring_checkpoint)
 
     def generate_info_table(self):
-        actor = 0
+        civilian = 0
         police = 0
         criminal = 0
         for value in self.actors:
@@ -188,13 +188,13 @@ class Map:
                 criminal += 1
             elif isinstance(value, Police):
                 police += 1
-            elif isinstance(value, Actor):
-                actor += 1
+            elif isinstance(value, Civilian):
+                civilian += 1
         return html.Div(children=[
-            html.Div(children=["Actors: " + str(actor)]),
+            html.Div(children=["Civilian: " + str(civilian)]),
             html.Div(children=["Police: " + str(police)]),
             html.Div(children=["Criminals: " + str(criminal)]),
-            html.Div(children=["Actors Robbed: " + str(self.dashboard[str(Events.ROBBING)])])
+            html.Div(children=["Civilians Robbed: " + str(self.dashboard[str(Events.ROBBING)])])
         ])
 
 
@@ -411,18 +411,24 @@ def actor_run_street(actor):
     return actor
 
 
-def simulate_actor_actions(actor_id, actor):
+def simulate_actor_actions(actor_index, actor):
     if isinstance(actor, Criminal):
         for other_actor_id, other_actor in enumerate(map.actors):
-            if actor_id == other_actor.id or type(other_actor) is not Actor:
+            if actor.id == other_actor.id or not isinstance(other_actor, Civilian):
                 continue
 
-            if actor.can_touch_actor(other_actor):
+            if actor.can_touch_actor(other_actor) and other_actor.event_by_id != actor.id:
+                actor.set_robbed_id(other_actor_id)
+                other_actor.set_was_robbed_by(actor.id)
                 street_id = actor.navigation_route.streets[actor.navigation_route.step]
                 street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
-                map.new_logs.append(ActorEventLog(actor_id, ActorLogAction.ROBBING, street_name, other_actor_id))
+                map.new_logs.append(ActorEventLog(actor.id, ActorLogAction.ROBBING, street_name, other_actor_id))
                 map.dashboard[str(Events.ROBBING)] += 1
                 map.additionals.append([actor.coordinates.x, actor.coordinates.y])
+        if actor.robbed_counter is not None:
+            actor.robbed_counter += 1
+            if actor.robbed_counter >= 30:
+                actor.set_incognito()
     return actor
 
 
@@ -445,13 +451,14 @@ def update_graph_live(n, n_button, old_log_children):
     actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
         delayed(actor_run_path)(actor) for actor in actors)
     actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
-        delayed(simulate_actor_actions)(actor_id, actor) for actor_id, actor in enumerate(actors))
+        delayed(simulate_actor_actions)(actor_index, actor) for actor_index, actor in enumerate(actors))
     data_df = actors_to_df(actors)
     additional_data = additionals_to_df(map.additionals)
 
     data_map.lat = data_df.y.values
     data_map.lon = data_df.x.values
     data_map.marker.color = data_df.color.values
+
     additional_map = fig.data[1]
     if len(map.additionals) > 0:
         additional_map.lat = additional_data.y.values
@@ -548,6 +555,7 @@ if __name__ == "__main__":
             color="yellow"
         ),
         hoverinfo="none",
+        opacity=0.5
     ))
 
     fig.update_layout(
@@ -618,7 +626,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=200 * 1000,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button")
