@@ -48,6 +48,8 @@ class Map:
 
     def __init__(self):
         self.db = get_database()
+        self.actors = []
+        # Collections
         # self.housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
         with open("tiles/mittweida.transportation_name.geojson") as f:
             self.transportations = json.load(f)
@@ -55,12 +57,17 @@ class Map:
         self.intersections_collection = self.db["intersections-name"]
         self.all_intersections = list(self.intersections_collection.find({}))
         self.navigation_collection = self.db["navigation"]
+
+        # Changeable properties
         self.change_road_possibility = 50
         self.step_size_divider = 2
         self.seed = 123456789
-        self.new_logs = []
         self.actor_count = 40
-        self.actors = []
+        self.penalty = 12
+        self.penalty_boundaries = [0, 60]
+
+        # Logging
+        self.new_logs = []
         self.dashboard = {
             str(Events.ROBBING): 0
         }
@@ -94,11 +101,9 @@ class Map:
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
-        while path == None:
+        while path is None:
             path = self.get_random_actor_path()
-        random.seed(map.seed)
-        map.seed += 1
-        random_probability = random.random()
+
         if actor_index < int((criminal_probability / 100) * self.actor_count):
             # actor = Criminal(coords, 1)
             actor = Criminal(actor_index, None, 1)
@@ -412,12 +417,16 @@ def actor_run_street(actor):
 
 
 def simulate_actor_actions(actor_index, actor):
+    # Criminal action
     if isinstance(actor, Criminal):
         for other_actor_id, other_actor in enumerate(map.actors):
             if actor.id == other_actor.id or not isinstance(other_actor, Civilian):
                 continue
 
-            if actor.can_touch_actor(other_actor) and other_actor.event_by_id != actor.id:
+            willing_to_rob = will_rob_actor(actor, other_actor)
+
+            # Add probability that criminal robbs actor
+            if actor.can_touch_actor(other_actor) and other_actor.event_by_id != actor.id and willing_to_rob:
                 actor.set_robbed_id(other_actor_id)
                 other_actor.set_was_robbed_by(actor.id)
                 street_id = actor.navigation_route.streets[actor.navigation_route.step]
@@ -430,6 +439,15 @@ def simulate_actor_actions(actor_index, actor):
             if actor.robbed_counter >= 30:
                 actor.set_incognito()
     return actor
+
+
+def will_rob_actor(actor, other_actor):
+    random.seed(map.seed)
+    map.seed += 1
+    random_penalty_month_score = random.randint(map.penalty_boundaries[0], map.penalty_boundaries[1])
+    if random_penalty_month_score >= map.penalty:
+        return True
+    return False
 
 
 
@@ -477,9 +495,10 @@ def update_graph_live(n, n_button, old_log_children):
           Input('submit-button', 'n_clicks'),
           Input('criminal-slider', 'value'),
           Input('police-slider', 'value'),
-          Input('road-slider', 'value'),
-          Input('seed_input', 'value'))
-def init_random_using_slider(button_value, criminal_value, police_value, change_road_value, seed_value):
+          #Input('road-slider', 'value'),
+          Input('seed_input', 'value'),
+          Input('penalty-slider', 'value'))
+def init_random_using_slider(button_value, criminal_value, police_value, seed_value, penalty_months):
     global thread
     global map
     global is_running
@@ -487,8 +506,9 @@ def init_random_using_slider(button_value, criminal_value, police_value, change_
         if is_running:
             map.terminate()
         map.seed = seed_value
+        map.penalty = penalty_months
         map.init_board()
-        map.change_road_possibility = change_road_value
+        #map.change_road_possibility = change_road_value
         map.random_fill(criminal_value, police_value)
         # thread = Thread(target=map.start_simulation)
         # thread.start()
@@ -579,38 +599,51 @@ if __name__ == "__main__":
 
     dash_app = Dash(__name__, server=app)
     dash_app.layout = html.Div([
-        html.Div(id='info'),
         html.Div(id='input-container', children=[
-            html.Label("Criminals in %", htmlFor='criminal-slider'),
-            dcc.Slider(
-                0,
-                100,
-                step=1,
-                value=30,
-                id='criminal-slider'
-            ),
-            html.Label("Police in %", htmlFor='police-slider'),
-            dcc.Slider(
-                0,
-                100,
-                step=1,
-                value=20,
-                id='police-slider'
-            ),
-            html.Label("Possibility to change roads in %", htmlFor='road-slider'),
-            dcc.Slider(
-                0,
-                100,
-                step=1,
-                value=map.change_road_possibility,
-                id='road-slider'
-            ),
-            html.Label("Random seed", htmlFor='seed_input'),
-            dcc.Input(
-                id="seed_input",
-                type="number",
-                value=start_seed,
-            ),
+            html.Div(style={"display": "flex", "flex-direction": "row", "width": "100%"}, children=[
+                html.Div(style={"width": "50%"}, children=[
+                    html.Label("Criminals in %", htmlFor='criminal-slider'),
+                    dcc.Slider(
+                        0,
+                        100,
+                        step=5,
+                        value=30,
+                        id='criminal-slider'
+                    ),
+                    html.Label("Police in %", htmlFor='police-slider'),
+                    dcc.Slider(
+                        0,
+                        100,
+                        step=5,
+                        value=20,
+                        id='police-slider'
+                    ),
+                ]),
+                html.Div(style={"width": "50%"}, children=[
+                #    html.Label("Possibility to change roads in %", htmlFor='road-slider'),
+                #    dcc.Slider(
+                #        0,
+                #        100,
+                #        step=1,
+                #        value=map.change_road_possibility,
+                #        id='road-slider'
+                #    ),
+                    html.Label("Penalty in Months", htmlFor='police-slider'),
+                    dcc.Slider(
+                        map.penalty_boundaries[0],
+                        map.penalty_boundaries[1],
+                        step=1,
+                        value=map.penalty,
+                        id='penalty-slider'
+                    ),
+                    html.Label("Random seed", htmlFor='seed_input'),
+                    dcc.Input(
+                        id="seed_input",
+                        type="number",
+                        value=start_seed,
+                    ),
+                ])
+            ]),
 
             html.Button(id='submit-button', children='Submit'),
         ]),
@@ -629,7 +662,8 @@ if __name__ == "__main__":
             interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
-        html.Button("Next Step", id="next-button")
+        html.Button("Next Step", id="next-button"),
+        html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
