@@ -5,6 +5,7 @@ import multiprocessing
 import os
 import random
 import sys
+from enum import Enum, auto
 from time import sleep
 
 import pandas as pd
@@ -16,7 +17,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, Output, Input, callback, State
 
 from database import get_database
-from models.ActorLog import ActorLog
+from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
 from helpers import get_closest_intersection, get_closest_street_point_index
 from models.navigation import NavigationRoute
@@ -37,35 +38,33 @@ global thread
 global map
 global fig
 
+class Events(Enum):
+    ROBBING=auto()
 
 class Map:
-    global board
     global c
     global iteration
     global is_running
 
     def __init__(self):
         self.db = get_database()
-        #self.housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
+        # self.housenumber_df = gpd.read_file("tiles/mittweida.housenumber.geojson")
         with open("tiles/mittweida.transportation_name.geojson") as f:
             self.transportations = json.load(f)
-        #self.transportations = gpd.read_file("tiles/mittweida.transportation.geojson")
-        #self.transportation_names = gpd.read_file("tiles/mittweida.transportation_name.geojson")
         self.transportations_collection = self.db["transportations-name"]
         self.intersections_collection = self.db["intersections-name"]
         self.all_intersections = list(self.intersections_collection.find({}))
         self.navigation_collection = self.db["navigation"]
         self.change_road_possibility = 50
-        self.grid_length = 8
         self.step_size_divider = 2
         self.seed = 123456789
         self.new_logs = []
-
-    def get_actors(self):
-        actors = []
-        for row in board:
-            actors.extend(row)
-        return actors
+        self.actor_count = 40
+        self.actors = []
+        self.dashboard = {
+            str(Events.ROBBING): 0
+        }
+        self.additionals = []
 
     def terminate(self):
         global is_running
@@ -73,112 +72,25 @@ class Map:
         sleep(1)
 
     def init_board(self):
-        global board
         global iteration
         iteration = 0
-        board = []
-        actor_index = 0
-        for column_index in range(0, self.grid_length):
-            column = []
-            for row_index in range(0, self.grid_length):
-                #coords = get_coordinate_for_field(row_index, column_index)
-                coords = self.get_random_actor_coordinate()
-                column.append(Criminal(actor_index, coords, 0))
-                actor_index += 1
-            board.append(column)
-
-    def show_terminal_board(self):
-        cls()
-        row_nr = 0
-        for r in board:
-            col_nr = 0
-            line = colored("|", 'black')
-            for c in r:
-                if isinstance(board[row_nr][col_nr], Criminal):
-                    item = colored("x", "red")
-                elif isinstance(board[row_nr][col_nr], Police):
-                    item = colored("o", "green")
-                else:
-                    item = colored("-", "black")
-
-                line = line + item + colored("|", 'black')
-                col_nr += 1
-            row_nr += 1
-            print(line)
-
-    def start_simulation(self):
-        global board
-        global c
-        global iteration
-        global is_running
-
-        is_running = True
-        try:
-            iteration = 0
-            no_change = False
-            while (c >= 0 and is_running is True):
-                if iteration > 1:
-                    no_change = True
-                new_board = copy.deepcopy(board)
-                iteration += 1
-                print("Iteration: " + str(iteration))
-                self.show_terminal_board()
-                for col in range(len(board)):
-                    for row in range(len(board)):
-                        value = board[row][col]
-                        criminal_neighbor_count = self.count_criminal(row, col)
-                        if (criminal_neighbor_count == 3) and isinstance(value, Actor):
-                            value = Criminal(value.id, value.x, value.y, 1)
-                            new_board[row][col] = value
-                            c += 1
-                            no_change = False
-                        elif (((criminal_neighbor_count < 2) or (criminal_neighbor_count > 3)) and
-                              isinstance(value, Criminal)):
-                            value = Actor(value.id, value.x, value.y)
-                            new_board[row][col] = value
-                            c -= 1
-                            no_change = False
-                board = copy.deepcopy(new_board)
-                sleep(1)
-                if no_change:
-                    self.random_fill()
-                    self.start_simulation()
-        except KeyboardInterrupt:
-            exit(0)
-        except:
-            print("Unexpected error:", sys.exc_info()[0])
-            raise
-
-    def count_criminal(self, row, col):
-        n = 0
-        for i in range(-1, 2):
-            for j in range(-1, 2):
-                if (i != 0) or (j != 0):
-                    r = row + i
-                    c = col + j
-                    if (r >= 0) & (r < len(board)) & (c >= 0) & (c < len(board)):
-                        n += 1 if isinstance(board[r][c], Criminal) else 0
-        return n
+        self.actors.clear()
+        for i in range(0, self.actor_count):
+            # coords = get_coordinate_for_field(row_index, column_index)
+            coords = self.get_random_actor_coordinate()
+            self.actors.append(Criminal(i, coords, 0))
 
     def random_fill(self, criminal_probability=30, police_probability=20):
-        global board
         global c
         c = 0
-        actor_index = 0
 
-        actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in range(0, len(board) * len(board)))
+        self.actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+            delayed(self.create_random_actor_with_path)(i, criminal_probability, police_probability) for i in range(0, self.actor_count))
 
-        for col in range(len(board)):
-            for row in range(len(board)):
-                #coords = self.get_random_actor_coordinate()
-                actor = actors[((len(board) * row) + col)]
-                if isinstance(actor, Criminal):
-                    c += 1
-                board[row][col] = actor
-                actor_index += 1
-
-        self.show_terminal_board()
-
+        for actor_index, actor in enumerate(self.actors):
+            # coords = self.get_random_actor_coordinate()
+            if isinstance(actor, Criminal):
+                c += 1
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
@@ -187,26 +99,17 @@ class Map:
         random.seed(map.seed)
         map.seed += 1
         random_probability = random.random()
-        max_actors = self.grid_length * self.grid_length
-        if actor_index < int((criminal_probability / 100) * max_actors):
+        if actor_index < int((criminal_probability / 100) * self.actor_count):
             # actor = Criminal(coords, 1)
             actor = Criminal(actor_index, None, 1)
-        elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * max_actors):
+        elif actor_index < int(((criminal_probability / 100) + (police_probability / 100)) * self.actor_count):
             # actor = Police(coords, -1)
             actor = Police(actor_index, None, -1)
         else:
             # actor = Actor(coords)
-            actor = Actor(actor_index, None)
+            actor = Civilian(actor_index, None)
         actor.set_navigation_route(path, False)
         return actor
-
-    def start_sim_with_random(self):
-        self.init_board()
-        self.random_fill()
-        self.start_simulation()
-
-    def start_sim_with_data(self):
-        self.start_simulation()
 
     def get_random_actor_coordinate(self):
         max_docs = self.transportations_collection.count_documents({})
@@ -238,9 +141,7 @@ class Map:
                                float(previous_linestring_checkpoint[0]),
                                float(previous_linestring_checkpoint[1]))
 
-
-
-    def get_random_actor_path(self, origin_street_index = None, origin_coordinates = None):
+    def get_random_actor_path(self, origin_street_index=None, origin_coordinates=None):
         max_docs = self.transportations_collection.count_documents({})
         route = None
 
@@ -257,7 +158,8 @@ class Map:
             random.seed(map.seed)
             map.seed += 1
             random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
-            random_origin_linestring_checkpoint = origin_geometry["coordinates"][random_origin_linestring_checkpoint_index]
+            random_origin_linestring_checkpoint = origin_geometry["coordinates"][
+                random_origin_linestring_checkpoint_index]
             routes = list(self.navigation_collection.find({"start": random_origin_street_index}))
             if routes is not None and len(routes) > 0:
                 random.seed(map.seed)
@@ -271,51 +173,29 @@ class Map:
         random.seed(map.seed)
         map.seed += 1
         random_destination_linestring_checkpoint_index = random.randint(0, len(destination_geometry["coordinates"]) - 1)
-        random_destination_linestring_checkpoint = destination_geometry["coordinates"][random_destination_linestring_checkpoint_index]
+        random_destination_linestring_checkpoint = destination_geometry["coordinates"][
+            random_destination_linestring_checkpoint_index]
 
-        return actor_pathfinding_from_db(random_origin_street_index, random_origin_linestring_checkpoint, random_destination_street_index, random_destination_linestring_checkpoint)
+        return actor_pathfinding_from_db(random_origin_street_index, random_origin_linestring_checkpoint,
+                                         random_destination_street_index, random_destination_linestring_checkpoint)
 
-
-
-
-
-@cross_origin()
-@app.route('/board/random', methods=['GET', 'POST'])
-def start_sim_with_random():
-    global thread
-    global map
-    global is_running
-    if is_running:
-        map.terminate()
-    #thread = Thread(target=map.start_sim_with_random)
-    #thread.start()
-    return 'Done!'
-
-
-@cross_origin()
-@app.route('/board/terminate', methods=['GET', 'POST'])
-def terminate():
-    global thread
-    global map
-    map.terminate()
-    return 'Terminated!'
-
-
-@cross_origin()
-@app.route('/board/new', methods=['POST'])
-def get_data_from_ui():
-    global map
-    global thread
-    global is_running
-    global board
-    data = request.get_json()
-    if is_running:
-        map.terminate()
-    board = data
-    count_criminal(data)
-    #thread = Thread(target=map.start_sim_with_data)
-    #thread.start()
-    return "Got Data"
+    def generate_info_table(self):
+        civilian = 0
+        police = 0
+        criminal = 0
+        for value in self.actors:
+            if isinstance(value, Criminal):
+                criminal += 1
+            elif isinstance(value, Police):
+                police += 1
+            elif isinstance(value, Civilian):
+                civilian += 1
+        return html.Div(children=[
+            html.Div(children=["Civilian: " + str(civilian)]),
+            html.Div(children=["Police: " + str(police)]),
+            html.Div(children=["Criminals: " + str(criminal)]),
+            html.Div(children=["Civilians Robbed: " + str(self.dashboard[str(Events.ROBBING)])])
+        ])
 
 
 def count_criminal(data):
@@ -337,32 +217,6 @@ def get_coordinate_for_field(row, column) -> (float, float):
     x = bounds_mittweida["lat_min"] + row * x_step
     y = bounds_mittweida["lon_min"] + column * y_step
     return x, y
-
-
-# background=True,
-# manager=background_callback_manager)
-@callback(Output('graph', 'figure'),
-          Output('info', 'children'),
-          Output('log-container', 'children'),
-          Input('interval-component', 'n_intervals'),
-          Input("next-button", "n_clicks"),
-          State('log-container', 'children'))
-def update_graph_live(n, n_button, old_log_children):
-    global fig
-    data_map = fig.data[0]
-    data = map.get_actors()
-    #data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
-    data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_path)(actor) for actor in data)
-    data_df = data_to_df(data)
-
-    data_map.lat = data_df.y.values
-    data_map.lon = data_df.x.values
-    data_map.marker.color = data_df.color.values
-    fig['layout']['uirevision'] = "foo"
-    children = generate_info_table()
-    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
-    map.new_logs.clear()
-    return fig, children, new_log_children
 
 
 def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_street_id, destination_coordinates):
@@ -394,20 +248,22 @@ def actor_run_path(actor):
             if actor.navigation_route.step >= len(actor.navigation_route.streets):
                 # set other route
                 path = None
-                while path == None:
+                while path is None:
                     path = map.get_random_actor_path(actor.navigation_route.streets[-1],
                                                      [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path, True)
                 actor.set_navigation_step(0)
-                map.new_logs.append(ActorLog(actor.id, actor.color, "New Path", f"{actor.coordinates.x}, {actor.coordinates.y}"))
+                map.new_logs.append(
+                    ActorLog(actor.id, actor.color, ActorLogAction.NEW_PATH, f"{actor.coordinates.x}, {actor.coordinates.y}"))
                 return actor
             else:
                 actor.set_navigation_step(actor.navigation_route.step)
                 street_id = actor.navigation_route.streets[actor.navigation_route.step]
                 street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
-                map.new_logs.append(ActorLog(actor.id, actor.color, "Next Navigation Point", f"{street_name}"))
+                map.new_logs.append(ActorLog(actor.id, actor.color, ActorLogAction.NEXT_NAVIGATION_POINT, street_name))
 
-        street = map.transportations_collection.find_one({"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
+        street = map.transportations_collection.find_one(
+            {"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
         linestrings = street["geometry"]["coordinates"]
         linestring_index = get_closest_street_point_index([actor.coordinates.x, actor.coordinates.y], linestrings)
         if linestring_index == 0:
@@ -416,7 +272,8 @@ def actor_run_path(actor):
             next_linestring = linestrings[-2]
         else:
             direction_linestrings = [linestrings[linestring_index + 1], linestrings[linestring_index - 1]]
-            next_linestring = direction_linestrings[get_closest_street_point_index(actor.navigation_route.get_route(), direction_linestrings)]
+            next_linestring = direction_linestrings[
+                get_closest_street_point_index(actor.navigation_route.get_route(), direction_linestrings)]
 
         follow_linestring_or_destination = [next_linestring, actor.navigation_route.get_route()]
         next_linestring = follow_linestring_or_destination[get_closest_street_point_index(
@@ -465,6 +322,7 @@ def find_all_connections(from_street_id):
                 result.append({"id": r["id"], "coordinates": [r["coordinates"][1], r["coordinates"][0]]})
             return result
 
+
 def actor_run_street(actor):
     street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
     linestrings = street["geometry"]["coordinates"]
@@ -502,7 +360,7 @@ def actor_run_street(actor):
                 actor.coordinates.direction_checkmark_y = next_linestring[1]
                 random.seed(map.seed)
                 map.seed += 1
-                actor.coordinates.direction_positive = random.randint(0,1) == 0
+                actor.coordinates.direction_positive = random.randint(0, 1) == 0
                 if next_linestring == [actor.coordinates.direction_checkmark_x,
                                        actor.coordinates.direction_checkmark_y]:
                     cross_on_intersection = False
@@ -553,6 +411,68 @@ def actor_run_street(actor):
     return actor
 
 
+def simulate_actor_actions(actor_index, actor):
+    if isinstance(actor, Criminal):
+        for other_actor_id, other_actor in enumerate(map.actors):
+            if actor.id == other_actor.id or not isinstance(other_actor, Civilian):
+                continue
+
+            if actor.can_touch_actor(other_actor) and other_actor.event_by_id != actor.id:
+                actor.set_robbed_id(other_actor_id)
+                other_actor.set_was_robbed_by(actor.id)
+                street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                map.new_logs.append(ActorEventLog(actor.id, ActorLogAction.ROBBING, street_name, other_actor_id))
+                map.dashboard[str(Events.ROBBING)] += 1
+                map.additionals.append([actor.coordinates.x, actor.coordinates.y])
+        if actor.robbed_counter is not None:
+            actor.robbed_counter += 1
+            if actor.robbed_counter >= 30:
+                actor.set_incognito()
+    return actor
+
+
+
+
+# background=True,
+# manager=background_callback_manager)
+@callback(Output('graph', 'figure'),
+          Output('info', 'children'),
+          Output('log-container', 'children'),
+          Input('interval-component', 'n_intervals'),
+          Input("next-button", "n_clicks"),
+          State('log-container', 'children'))
+def update_graph_live(n, n_button, old_log_children):
+    global fig
+    map.additionals.clear()
+    data_map = fig.data[0]
+    # data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
+    actors = map.actors
+    actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+        delayed(actor_run_path)(actor) for actor in actors)
+    actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
+        delayed(simulate_actor_actions)(actor_index, actor) for actor_index, actor in enumerate(actors))
+    data_df = actors_to_df(actors)
+    additional_data = additionals_to_df(map.additionals)
+
+    data_map.lat = data_df.y.values
+    data_map.lon = data_df.x.values
+    data_map.marker.color = data_df.color.values
+
+    additional_map = fig.data[1]
+    if len(map.additionals) > 0:
+        additional_map.lat = additional_data.y.values
+        additional_map.lon = additional_data.x.values
+    else:
+        additional_map.lat = []
+        additional_map.lon = []
+    fig['layout']['uirevision'] = "foo"
+    children = map.generate_info_table()
+    new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
+    map.new_logs.clear()
+    return fig, children, new_log_children
+
+
 @callback(Output('submit-button', 'n_clicks'),
           Input('submit-button', 'n_clicks'),
           Input('criminal-slider', 'value'),
@@ -570,38 +490,27 @@ def init_random_using_slider(button_value, criminal_value, police_value, change_
         map.init_board()
         map.change_road_possibility = change_road_value
         map.random_fill(criminal_value, police_value)
-        #thread = Thread(target=map.start_simulation)
-        #thread.start()
+        # thread = Thread(target=map.start_simulation)
+        # thread.start()
     return 0
 
 
-def generate_info_table():
-    actor = 0
-    police = 0
-    criminal = 0
-    for row in board:
-        for value in row:
-            if isinstance(value, Criminal):
-                criminal += 1
-            elif isinstance(value, Actor):
-                actor += 1
-            elif isinstance(value, Police):
-                police += 1
-    return html.Div(children=[
-        html.Div(children=["Actors: " + str(actor)]),
-        html.Div(children=["Criminals: " + str(criminal)]),
-        html.Div(children=["Police: " + str(police)])
-    ])
-
-
-def data_to_df(data):
+def actors_to_df(data):
     data_attrs = []
     for item in data:
         item_vars = {
-                        "z": item.z,
-                        "color": item.color,
-                        "id": item.id
-                    } | vars(item.coordinates)
+            "z": item.z,
+            "color": item.color,
+            "id": str(item.id)
+        } | vars(item.coordinates)
+        data_attrs.append(item_vars)
+    return pd.DataFrame(data_attrs)
+
+
+def additionals_to_df(data):
+    data_attrs = []
+    for item in data:
+        item_vars = {"x": item[0], "y": item[1]}
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
 
@@ -617,24 +526,42 @@ if __name__ == "__main__":
     map.init_board()
     map.random_fill()
 
-    data = map.get_actors()
-    data_df = data_to_df(data)
+    data = map.actors
+    additional_data = additionals_to_df(map.additionals)
+    data_df = actors_to_df(data)
     fig = go.Figure(go.Scattermapbox(
         lat=data_df.y.values,
         lon=data_df.x.values,
-        mode='markers',
+        mode="markers+text",
         marker=go.scattermapbox.Marker(
             size=12,
             color=data_df.color.values
         ),
-        hoverinfo="lat+lon+text",
-        hovertext=data_df.id
+        text=data_df.id.values,
+        textposition="top center",
+        textfont={
+            "size": 18,
+            "color": "white"
+    },
+        hoverinfo="lat+lon",
+    ))
+
+    fig.add_trace(go.Scattermapbox(
+        lat=[],
+        lon=[],
+        mode="markers",
+        marker=go.scattermapbox.Marker(
+            size=36,
+            color="yellow"
+        ),
+        hoverinfo="none",
+        opacity=0.5
     ))
 
     fig.update_layout(
         mapbox=dict(center=go.layout.mapbox.Center(lat=50.9872722, lon=12.9737849), zoom=14, accesstoken=mapbox_token),
         mapbox_style="satellite-streets",
-        #mapbox_style="white-bg",
+        # mapbox_style="white-bg",
         mapbox_layers=[
             {
                 "below": 'traces',
@@ -690,7 +617,7 @@ if __name__ == "__main__":
         html.Div(style={"display": "flex", "flex-direction": "row", "height": "100vh"}, children=[
             dcc.Graph(figure=fig, id='graph', style={"flex": "5"}),
             html.Div(id="log-container",
-                     style={"padding":"10px",
+                     style={"padding": "10px",
                             "display": "flex",
                             "overflow": "scroll",
                             "flex": "1",
@@ -699,7 +626,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=2 * 500,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button")

@@ -36,12 +36,20 @@ class Actor:
                 self.coordinates.y
             )
 
+    def can_touch_actor(self, destination_actor):
+        distance = abs(self.coordinates.x - destination_actor.coordinates.x) + abs(self.coordinates.y - destination_actor.coordinates.y)
+        if distance <= 0.00003:
+            return True
+        return False
+
 
 class Criminal(Actor):
     def __init__(self, id, actor_coordinate, z):
         super().__init__(id, actor_coordinate)
         self.z = z
-        self.color = "red"
+        self.color = "white"
+        self.robbed = None
+        self.robbed_counter = None
 
     def increase_criminal(self):
         self.z += 1
@@ -52,12 +60,32 @@ class Criminal(Actor):
         else:
             self.z -= 1
 
+    def set_robbed_id(self, id):
+        self.robbed = id
+        self.color = "red"
+        self.robbed_counter = 0
+
+    def set_incognito(self):
+        self.robbed = None
+        self.color = "white"
+        self.robbed_counter = None
+
 
 class Police(Actor):
     def __init__(self, id, coordinates, z):
         super().__init__(id, coordinates)
         self.z = z
         self.color = "blue"
+
+
+class Civilian(Actor):
+    def __init__(self, id, coordinates):
+        super().__init__(id, coordinates)
+        self.event_by_id = None
+
+    def set_was_robbed_by(self, id):
+        self.event_by_id = id
+
 
 
 class ActorCoordinate:
