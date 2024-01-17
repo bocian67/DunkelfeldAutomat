@@ -212,10 +212,6 @@ def count_criminal(data):
                 c += 1
 
 
-def cls():
-    os.system('cls' if os.name == 'nt' else 'clear')
-
-
 def get_coordinate_for_field(row, column) -> (float, float):
     x_step = (bounds_mittweida["lat_max"] - bounds_mittweida["lat_min"]) / 12
     y_step = (bounds_mittweida["lon_max"] - bounds_mittweida["lon_min"]) / 12
@@ -424,9 +420,8 @@ def simulate_actor_actions(actor_index, actor):
                 continue
 
             willing_to_rob = will_rob_actor(actor, other_actor)
-
-            # Add probability that criminal robbs actor
             if actor.can_touch_actor(other_actor) and other_actor.event_by_id != actor.id and willing_to_rob:
+                # criminal robs civilian
                 actor.set_robbed_id(other_actor_id)
                 other_actor.set_was_robbed_by(actor.id)
                 street_id = actor.navigation_route.streets[actor.navigation_route.step]
@@ -434,6 +429,31 @@ def simulate_actor_actions(actor_index, actor):
                 map.new_logs.append(ActorEventLog(actor.id, ActorLogAction.ROBBING, street_name, other_actor_id))
                 map.dashboard[str(Events.ROBBING)] += 1
                 map.additionals.append([actor.coordinates.x, actor.coordinates.y])
+
+                # police seeks criminal
+                near_police_actors = get_near_actors(actor)
+                for police_actor in near_police_actors:
+                    path = actor_pathfinding_from_db(police_actor.navigation_route.streets[-1],
+                                                     [police_actor.coordinates.x, police_actor.coordinates.y],
+                                                     actor.coordinates.street_id,
+                                                     [actor.coordinates.x, actor.coordinates.y])
+                    if path is not None:
+                        actor.set_navigation_route(path, True)
+                        actor.set_navigation_step(0)
+                        map.new_logs.append(
+                            ActorLog(actor.id, actor.color, ActorLogAction.GOES_LAST_SUSPECT_PLACE,
+                                     f"{actor.coordinates.x}, {actor.coordinates.y}"))
+
+                # criminal uses new route
+                path = None
+                while path is None:
+                    path = map.get_random_actor_path(actor.navigation_route.streets[-1],
+                                                     [actor.coordinates.x, actor.coordinates.y])
+                actor.set_navigation_route(path, True)
+                actor.set_navigation_step(0)
+                map.new_logs.append(
+                    ActorLog(actor.id, actor.color, ActorLogAction.FLEES,
+                             f"{actor.coordinates.x}, {actor.coordinates.y}"))
         if actor.robbed_counter is not None:
             actor.robbed_counter += 1
             if actor.robbed_counter >= 30:
@@ -448,6 +468,16 @@ def will_rob_actor(actor, other_actor):
     if random_penalty_month_score >= map.penalty:
         return True
     return False
+
+
+def get_near_actors(actor, count=3):
+    distances = []
+    for other_actor in map.actors:
+        if other_actor.id != actor.id:
+            distance = abs(actor.coordinates.x - other_actor.coordinates.x) + abs(actor.coordinates.y - other_actor.coordinates.y)
+            distances.append({"actor": other_actor, "distance": distance})
+    distances = sorted(distances, key=lambda d: d["distance"])
+    return [item["actor"] for item in distances[:count]]
 
 
 

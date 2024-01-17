@@ -37,3 +37,5 @@ class ActorLogAction(Enum):
     NEW_PATH = "uses new path"
     NEXT_NAVIGATION_POINT = "sets next navigation point"
     ROBBING = "robbed"
+    GOES_LAST_SUSPECT_PLACE = "goes to suspects last location point"
+    FLEES = "flees to"
