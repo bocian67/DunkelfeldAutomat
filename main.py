@@ -19,7 +19,7 @@ from dash import Dash, dcc, html, Output, Input, callback, State
 from database import get_database
 from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
-from helpers import get_closest_intersection, get_closest_street_point_index
+from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from models.navigation import NavigationRoute
 
 mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
@@ -149,7 +149,7 @@ class Map:
     def get_random_actor_path(self, origin_street_index=None, origin_coordinates=None):
         max_docs = self.transportations_collection.count_documents({})
         route = None
-
+        random_origin_linestring_checkpoint = None
         while True:
             if origin_street_index is not None and origin_coordinates is not None:
                 random_origin_street_index = origin_street_index
@@ -163,8 +163,8 @@ class Map:
             random.seed(map.seed)
             map.seed += 1
             random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
-            random_origin_linestring_checkpoint = origin_geometry["coordinates"][
-                random_origin_linestring_checkpoint_index]
+            if random_origin_linestring_checkpoint is None:
+                random_origin_linestring_checkpoint = origin_geometry["coordinates"][random_origin_linestring_checkpoint_index]
             routes = list(self.navigation_collection.find({"start": random_origin_street_index}))
             if routes is not None and len(routes) > 0:
                 random.seed(map.seed)
@@ -237,6 +237,12 @@ def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_
             best_connection = NavigationRoute()
             best_connection.route = route["route"]
             best_connection.streets = route["streets"]
+        else:
+            route = map.navigation_collection.find_one({"end": origin_street_id, "start": destination_street_id})
+            if route is not None:
+                best_connection = NavigationRoute()
+                best_connection.route = reverse_route(route["route"])
+                best_connection.streets = list(reversed(route["streets"]))
 
     return best_connection
 
@@ -259,9 +265,12 @@ def actor_run_path(actor):
                 return actor
             else:
                 actor.set_navigation_step(actor.navigation_route.step)
-                street_id = actor.navigation_route.streets[actor.navigation_route.step]
-                street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
-                map.new_logs.append(ActorLog(actor.id, actor.color, ActorLogAction.NEXT_NAVIGATION_POINT, street_name))
+                try:
+                    street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                    street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                    map.new_logs.append(ActorLog(actor.id, actor.color, ActorLogAction.NEXT_NAVIGATION_POINT, street_name))
+                except:
+                    pass
 
         street = map.transportations_collection.find_one(
             {"id": actor.navigation_route.streets[actor.navigation_route.step - 1]})
@@ -415,6 +424,8 @@ def actor_run_street(actor):
 def simulate_actor_actions(actor_index, actor):
     # Criminal action
     if isinstance(actor, Criminal):
+        if actor.robbed is not None:
+            return actor
         for other_actor_id, other_actor in enumerate(map.actors):
             if actor.id == other_actor.id or not isinstance(other_actor, Civilian):
                 continue
@@ -431,7 +442,7 @@ def simulate_actor_actions(actor_index, actor):
                 map.additionals.append([actor.coordinates.x, actor.coordinates.y])
 
                 # police seeks criminal
-                near_police_actors = get_near_actors(actor)
+                near_police_actors = get_near_police_actors(actor)
                 for police_actor in near_police_actors:
                     path = actor_pathfinding_from_db(police_actor.navigation_route.streets[-1],
                                                      [police_actor.coordinates.x, police_actor.coordinates.y],
@@ -456,8 +467,21 @@ def simulate_actor_actions(actor_index, actor):
                              f"{actor.coordinates.x}, {actor.coordinates.y}"))
         if actor.robbed_counter is not None:
             actor.robbed_counter += 1
-            if actor.robbed_counter >= 30:
+            if actor.robbed_counter >= 60:
                 actor.set_incognito()
+
+        # Police action
+    elif isinstance(actor, Police):
+        for other_actor_id, other_actor in enumerate(map.actors):
+            if actor.id == other_actor.id or not isinstance(other_actor, Criminal):
+                continue
+
+            if actor.can_touch_actor(other_actor) and other_actor.robbed is not None:
+                # criminal is caught and goes to prison
+                map.actors.remove(other_actor)
+                map.new_logs.append(
+                    ActorLog(other_actor.id, "green", ActorLogAction.SEND_TO_PRISON,
+                             f"{other_actor.id}"))
     return actor
 
 
@@ -470,10 +494,10 @@ def will_rob_actor(actor, other_actor):
     return False
 
 
-def get_near_actors(actor, count=3):
+def get_near_police_actors(actor, count=3):
     distances = []
     for other_actor in map.actors:
-        if other_actor.id != actor.id:
+        if other_actor.id != actor.id and isinstance(other_actor, Police):
             distance = abs(actor.coordinates.x - other_actor.coordinates.x) + abs(actor.coordinates.y - other_actor.coordinates.y)
             distances.append({"actor": other_actor, "distance": distance})
     distances = sorted(distances, key=lambda d: d["distance"])
@@ -689,7 +713,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=1 * 1000,  # in milliseconds
+            interval=1000 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
