@@ -65,6 +65,7 @@ class Map:
         self.actor_count = 40
         self.penalty = 12
         self.penalty_boundaries = [0, 60]
+        self.default_speed = 20
 
         # Logging
         self.new_logs = []
@@ -297,9 +298,19 @@ def actor_run_path(actor):
 
     # Walking speed
     coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
-    coordinate_step_x = coordinate_gap_x / map.step_size_divider
     coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
-    coordinate_step_y = coordinate_gap_y / map.step_size_divider
+
+    # calculate pitch
+    if coordinate_gap_x == 0:
+        m = 1
+    else:
+        m = coordinate_gap_y / coordinate_gap_x
+    max_distance_per_step = map.default_speed / 100000
+    coordinate_step_x = max_distance_per_step
+    coordinate_step_y = max_distance_per_step * m
+
+    #coordinate_step_x = coordinate_gap_x / map.step_size_divider
+    #coordinate_step_y = coordinate_gap_y / map.step_size_divider
 
     # Walk
     if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
@@ -395,9 +406,16 @@ def actor_run_street(actor):
 
     # Walking speed
     coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
-    coordinate_step_x = coordinate_gap_x / map.step_size_divider
     coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
-    coordinate_step_y = coordinate_gap_y / map.step_size_divider
+
+    # calculate pitch
+    if coordinate_gap_x == 0:
+        m = 1
+    else:
+        m = coordinate_gap_y / coordinate_gap_x
+    max_distance_per_step = map.default_speed / 10000
+    coordinate_step_x = max_distance_per_step
+    coordinate_step_y = max_distance_per_step * m
 
     # Walk
     if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
@@ -551,8 +569,9 @@ def update_graph_live(n, n_button, old_log_children):
           Input('police-slider', 'value'),
           #Input('road-slider', 'value'),
           Input('seed_input', 'value'),
+          Input('speed-slider', 'value'),
           Input('penalty-slider', 'value'))
-def init_random_using_slider(button_value, criminal_value, police_value, seed_value, penalty_months):
+def init_random_using_slider(button_value, criminal_value, police_value, seed_value, speed_value, penalty_months):
     global thread
     global map
     global is_running
@@ -560,6 +579,7 @@ def init_random_using_slider(button_value, criminal_value, police_value, seed_va
         if is_running:
             map.terminate()
         map.seed = seed_value
+        map.default_speed = speed_value
         map.penalty = penalty_months
         map.init_board()
         #map.change_road_possibility = change_road_value
@@ -674,14 +694,14 @@ if __name__ == "__main__":
                     ),
                 ]),
                 html.Div(style={"width": "50%"}, children=[
-                #    html.Label("Possibility to change roads in %", htmlFor='road-slider'),
-                #    dcc.Slider(
-                #        0,
-                #        100,
-                #        step=1,
-                #        value=map.change_road_possibility,
-                #        id='road-slider'
-                #    ),
+                    html.Label("General Speed", htmlFor='speed-slider'),
+                    dcc.Slider(
+                        1,
+                        100,
+                        step=10,
+                        value=map.default_speed,
+                        id='speed-slider'
+                    ),
                     html.Label("Penalty in Months", htmlFor='police-slider'),
                     dcc.Slider(
                         map.penalty_boundaries[0],
@@ -713,7 +733,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=1000 * 1000,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
