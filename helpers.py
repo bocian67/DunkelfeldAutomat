@@ -39,3 +39,10 @@ def get_closest_street_point_index(point, street_elements):
             nearest = element
             index = element_index
     return index
+
+
+def reverse_route(route):
+    new_route = dict()
+    for key_index, key in enumerate(list(reversed(route.keys()))):
+        new_route[str(key_index)] = route[key]
+    return new_route

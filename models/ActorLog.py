@@ -9,12 +9,14 @@ class ActorLog:
         self.actor_color = actor_color
 
     def __str__(self):
-        if self.action is ActorLogAction.NEW_PATH:
-            return f"Actor {self.actor_id} {self.action.value} from {self.location}"
-        elif self.action is ActorLogAction.NEXT_NAVIGATION_POINT:
+        if self.action is ActorLogAction.SEND_TO_PRISON:
+            return f"Actor {self.actor_id} {self.action.value} by Police {self.location}"
+        else:
             return f"Actor {self.actor_id} {self.action.value} on {self.location}"
 
     def log_to_div(self):
+        if self.action in [ActorLogAction.NEW_PATH, ActorLogAction.NEXT_NAVIGATION_POINT]:
+            return
         return html.Div(style={"background": self.actor_color}, children=[
             html.P(str(self))
         ])
@@ -37,3 +39,6 @@ class ActorLogAction(Enum):
     NEW_PATH = "uses new path"
     NEXT_NAVIGATION_POINT = "sets next navigation point"
     ROBBING = "robbed"
+    GOES_LAST_SUSPECT_PLACE = "goes to suspects last location point"
+    FLEES = "flees to"
+    SEND_TO_PRISON = "was send to prison"

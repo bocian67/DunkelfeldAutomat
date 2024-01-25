@@ -42,6 +42,12 @@ class Actor:
             return True
         return False
 
+    def is_actor_near(self, destination_actor):
+        distance = abs(self.coordinates.x - destination_actor.coordinates.x) + abs(self.coordinates.y - destination_actor.coordinates.y)
+        if distance <= 0.0004:
+            return True
+        return False
+
 
 class Criminal(Actor):
     def __init__(self, id, actor_coordinate, z):
@@ -76,6 +82,12 @@ class Police(Actor):
         super().__init__(id, coordinates)
         self.z = z
         self.color = "blue"
+        self.suspect_id = None#
+        self.suspect_last_known_coordinate = None
+
+    def set_suspect(self, suspect_id, suspect_last_known_coordintates):
+        self.suspect_id = suspect_id
+        self.suspect_last_known_coordinate = suspect_last_known_coordintates
 
 
 class Civilian(Actor):
