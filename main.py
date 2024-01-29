@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import copy
 import json
+import math
 import multiprocessing
 import os
 import random
@@ -249,7 +250,7 @@ def actor_pathfinding_from_db(origin_street_id, origin_coordinates, destination_
     return best_connection
 
 
-def actor_run_path(actor):
+def actor_run_path(actor, distance=None):
     if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
         navigation_route = actor.navigation_route.get_route()
         if actor.coordinates.x == navigation_route[0] and actor.coordinates.y == navigation_route[1]:
@@ -298,41 +299,39 @@ def actor_run_path(actor):
         actor.coordinates.direction_checkmark_y = next_linestring[1]
 
     # Walking speed
-    coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
-    coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
+    coordinate_gap_x = abs(actor.coordinates.x - actor.coordinates.direction_checkmark_x)
+    coordinate_gap_y = abs(actor.coordinates.y - actor.coordinates.direction_checkmark_y)
 
-    # calculate pitch
-    if coordinate_gap_x == 0:
-        m = 1
-    else:
-        m = coordinate_gap_y / coordinate_gap_x
-
-
-    if isinstance(actor, Police):
+    route_length = math.sqrt(math.pow(coordinate_gap_x, 2) + math.pow(coordinate_gap_y, 2))
+    if distance is not None:
+        max_distance_per_step = distance
+    elif isinstance(actor, Police):
         max_distance_per_step = (map.default_speed + map.police_extra_speed) / 100000
     else:
         max_distance_per_step = map.default_speed / 100000
-    coordinate_step_x = max_distance_per_step
-    coordinate_step_y = max_distance_per_step * m
 
-    # Walk
-    if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-        actor.coordinates.x += coordinate_step_x
-        if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
-            actor.coordinates.x = actor.coordinates.direction_checkmark_x
-    else:
-        actor.coordinates.x -= coordinate_step_x
+    if route_length < max_distance_per_step:
+        actor.coordinates.x = actor.coordinates.direction_checkmark_x
+        actor.coordinates.y = actor.coordinates.direction_checkmark_y
+        distance_left = max_distance_per_step - route_length
+        actor_run_path(actor, distance_left)
+    elif route_length > max_distance_per_step:
+        scale_factor = max_distance_per_step / route_length
+        coordinate_step_x = scale_factor * coordinate_gap_x
+        coordinate_step_y = scale_factor * coordinate_gap_y
+
         if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-            actor.coordinates.x = actor.coordinates.direction_checkmark_x
+            actor.coordinates.x += coordinate_step_x
+        else:
+            actor.coordinates.x -= coordinate_step_x
 
-    if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-        actor.coordinates.y += coordinate_step_y
-        if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
-            actor.coordinates.y = actor.coordinates.direction_checkmark_y
-    else:
-        actor.coordinates.y -= coordinate_step_y
         if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-            actor.coordinates.y = actor.coordinates.direction_checkmark_y
+            actor.coordinates.y += coordinate_step_y
+        else:
+            actor.coordinates.y -= coordinate_step_y
+    else:
+        actor.coordinates.x = actor.coordinates.direction_checkmark_x
+        actor.coordinates.y = actor.coordinates.direction_checkmark_y
 
     return actor
 
