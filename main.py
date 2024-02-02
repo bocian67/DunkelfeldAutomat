@@ -1,27 +1,25 @@
 # -*- coding: utf-8 -*-
-import copy
 import json
 import math
 import multiprocessing
 import os
 import random
-import sys
 from enum import Enum, auto
 from time import sleep
 
 import pandas as pd
-from flask import Flask, request
-from flask_cors import CORS, cross_origin
-from joblib import Parallel, delayed
-from termcolor import colored
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, Output, Input, callback, State
+from flask import Flask
+from flask_cors import CORS
+from joblib import Parallel, delayed
+import plotly.express as px
 
 from database import get_database
+from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from initial_spawn_places import InitialSpawnPlaces
 from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
-from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from models.navigation import NavigationRoute
 from statictics_writer import StatisticsWriter
 
@@ -40,6 +38,7 @@ bounds_mittweida = {"lat_min": 50.979491, "lat_max": 50.995568, "lon_min": 12.95
 global thread
 global map
 global fig
+global infochart
 
 class Events(Enum):
     ROBBING=auto(),
@@ -564,13 +563,15 @@ def get_near_police_actors(actor, count=3):
 # background=True,
 # manager=background_callback_manager)
 @callback(Output('graph', 'figure'),
-          Output('info', 'children'),
+          #Output('info', 'children'),
           Output('log-container', 'children'),
+          Output('infochart', 'figure'),
           Input('interval-component', 'n_intervals'),
           Input("next-button", "n_clicks"),
           State('log-container', 'children'))
 def update_graph_live(n, n_button, old_log_children):
     global fig
+    global infochart
     map.additionals.clear()
     data_map = fig.data[0]
     # data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
@@ -582,8 +583,8 @@ def update_graph_live(n, n_button, old_log_children):
     data_df = actors_to_df(actors)
     additional_data = additionals_to_df(map.additionals)
     children = map.generate_info_table()
-    map.logger.write_csv(str(map.police_count), str(map.criminal_count), str(map.civil_count),
-                         str(map.dashboard[str(Events.ROBBING)]), str(map.dashboard[str(Events.PRISON)]))
+    map.logger.write_csv(map.police_count, map.criminal_count, map.civil_count,
+                         map.dashboard[str(Events.ROBBING)], map.dashboard[str(Events.PRISON)])
 
     data_map.lat = data_df.y.values
     data_map.lon = data_df.x.values
@@ -597,9 +598,24 @@ def update_graph_live(n, n_button, old_log_children):
         additional_map.lat = []
         additional_map.lon = []
     fig['layout']['uirevision'] = "foo"
+
+    infochart_data = map.logger.data_to_df()
+    infochart = px.line(infochart_data, x="iteration", y="y", color="category")
+    infochart['data'][0]['line']['dash'] = "dot"
+    infochart['data'][1]['line']['dash'] = "dot"
+    infochart['data'][2]['line']['dash'] = "dot"
+    infochart['data'][3]['line']['dash'] = "solid"
+    infochart['data'][4]['line']['dash'] = "longdash"
+
+
+
+
+    infochart['layout']['uirevision'] = "foo"
+
+
     new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
     map.new_logs.clear()
-    return fig, children, new_log_children
+    return fig, new_log_children, infochart
 
 
 @callback(Output('submit-button', 'n_clicks'),
@@ -656,6 +672,7 @@ if __name__ == "__main__":
     global map
     global is_running
     global fig
+
     os.system('color')
     is_running = False
     map = Map()
@@ -783,13 +800,16 @@ if __name__ == "__main__":
         ]),
         html.Div(style={"display": "flex", "flex-direction": "row", "height": "100vh"}, children=[
             dcc.Graph(figure=fig, id='graph', style={"flex": "5"}),
-            html.Div(id="log-container",
-                     style={"padding": "10px",
-                            "display": "flex",
-                            "overflow": "scroll",
-                            "flex": "1",
-                            "flex-direction": "column-reverse"},
-                     children=[html.P("Start of the logs")])
+            html.Div(style={"display": "flex", "flex-direction": "column", "flex": "1"}, children=[
+                html.Div(id="log-container",
+                         style={"padding": "10px",
+                                "display": "flex",
+                                "overflow": "scroll",
+                                "flex": "1",
+                                "flex-direction": "column-reverse"},
+                         children=[html.P("Start of the logs")])
+            ])
+
         ]),
         dcc.Interval(
             id='interval-component',
@@ -797,7 +817,8 @@ if __name__ == "__main__":
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
-        html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
+        dcc.Graph(id='infochart', style={"flex": "1", "padding": "1ßpx", "border": "2px red"}),
+        #html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
