@@ -20,4 +20,3 @@ class StatisticsWriter():
         with open(self.path, 'a') as outfile:
             writer = csv.writer(outfile)
             writer.writerow([police_count, criminal_count, civil_count, robbery_count, prison_count])
-

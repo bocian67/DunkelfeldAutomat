@@ -18,6 +18,7 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, Output, Input, callback, State
 
 from database import get_database
+from initial_spawn_places import InitialSpawnPlaces
 from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
 from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
@@ -72,6 +73,7 @@ class Map:
         self.police_extra_speed = 0
         self.police_percent = 20
         self.criminal_percent = 30
+        self.starting_location = "ALL"
 
         # Logging
         self.new_logs = []
@@ -114,8 +116,23 @@ class Map:
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
+        possible_street_ids = InitialSpawnPlaces.get_street_ids_for_location(map.starting_location)
         while path is None:
-            path = self.get_random_actor_path()
+            if possible_street_ids is None:
+                origin_street_id = None
+                random_origin_linestring_checkpoint = None
+            else:
+                random.seed(map.seed)
+                map.seed += 1
+                origin_street_id = random.choice(possible_street_ids)
+                street = self.transportations_collection.find_one({"id": origin_street_id})
+                origin_geometry = street["geometry"]
+                random.seed(map.seed)
+                map.seed += 1
+                random_origin_linestring_checkpoint_index = random.randint(0, len(origin_geometry["coordinates"]) - 1)
+                random_origin_linestring_checkpoint = origin_geometry["coordinates"][
+                    random_origin_linestring_checkpoint_index]
+            path = self.get_random_actor_path(origin_street_index=origin_street_id, origin_coordinates=random_origin_linestring_checkpoint)
 
         if actor_index < int((criminal_probability / 100) * self.actor_count):
             # actor = Criminal(coords, 1)
@@ -594,8 +611,9 @@ def update_graph_live(n, n_button, old_log_children):
           Input('seed_input', 'value'),
           Input('speed-slider', 'value'),
           Input('penalty-slider', 'value'),
-          Input('police-mobility-slider', 'value'))
-def init_random_using_slider(button_value, criminal_value, police_value, seed_value, speed_value, penalty_months, police_mobility_value):
+          Input('police-mobility-slider', 'value'),
+          Input('starting-locations-radio', 'value'))
+def init_random_using_slider(button_value, criminal_value, police_value, seed_value, speed_value, penalty_months, police_mobility_value, starting_location_value):
     global thread
     global map
     global is_running
@@ -609,6 +627,7 @@ def init_random_using_slider(button_value, criminal_value, police_value, seed_va
         map.police_extra_speed = police_mobility_value
         map.police_percent = police_value
         map.criminal_percent = criminal_value
+        map.starting_location = starting_location_value
         map.init_board()
         map.random_fill(map.criminal_percent, map.police_percent)
     return 0
@@ -726,6 +745,13 @@ if __name__ == "__main__":
                         value=map.penalty,
                         id='penalty-slider'
                     ),
+                    html.Label("Starting locations", htmlFor='starting-locations-radio'),
+                    dcc.RadioItems(
+                        options=InitialSpawnPlaces.possible_starting_locations,
+                        inline=True,
+                        value=map.starting_location,
+                        id="starting-locations-radio"
+                    )
                 ]),
                 html.Div(style={"width": "50%"}, children=[
                     html.Label("General Speed", htmlFor='speed-slider'),
@@ -768,7 +794,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=1 * 1000,  # in milliseconds
+            interval=100 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
