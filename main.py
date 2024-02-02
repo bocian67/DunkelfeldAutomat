@@ -102,6 +102,7 @@ class Map:
             self.actors.append(Criminal(i, coords, 0))
 
     def random_fill(self, criminal_probability=30, police_probability=20):
+        init_seed = self.seed
         global c
         c = 0
 
@@ -112,7 +113,7 @@ class Map:
             # coords = self.get_random_actor_coordinate()
             if isinstance(actor, Criminal):
                 c += 1
-        self.logger.init_parameter(self.actor_count, self.criminal_percent, self.police_percent, self.penalty, self.default_speed, self.police_extra_speed, self.seed)
+        self.logger.init_parameter(self.actor_count, self.criminal_percent, self.police_percent, self.penalty, self.default_speed, self.police_extra_speed, init_seed)
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
@@ -345,7 +346,7 @@ def actor_run_path(actor, distance=None):
         actor.coordinates.y = actor.coordinates.direction_checkmark_y
         distance_left = max_distance_per_step - route_length
         actor_run_path(actor, distance_left)
-    elif route_length > max_distance_per_step:
+    elif route_length >= max_distance_per_step:
         scale_factor = max_distance_per_step / route_length
         coordinate_step_x = scale_factor * coordinate_gap_x
         coordinate_step_y = scale_factor * coordinate_gap_y
@@ -376,7 +377,7 @@ def find_all_connections(from_street_id):
             return result
 
 
-def actor_run_street(actor):
+def actor_run_street(actor, distance=None):
     street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
     linestrings = street["geometry"]["coordinates"]
     linestring_index = get_closest_street_point_index(
@@ -436,44 +437,42 @@ def actor_run_street(actor):
             actor.coordinates.direction_checkmark_x = next_linestring[0]
             actor.coordinates.direction_checkmark_y = next_linestring[1]
 
-    # Walking speed
-    coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
-    coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
+        # Walking speed
+        coordinate_gap_x = abs(actor.coordinates.x - actor.coordinates.direction_checkmark_x)
+        coordinate_gap_y = abs(actor.coordinates.y - actor.coordinates.direction_checkmark_y)
 
-    # calculate pitch
-    if coordinate_gap_x == 0:
-        m = 1
-    else:
-        m = coordinate_gap_y / coordinate_gap_x
+        route_length = math.sqrt(math.pow(coordinate_gap_x, 2) + math.pow(coordinate_gap_y, 2))
+        if distance is not None:
+            max_distance_per_step = distance
+        elif isinstance(actor, Police):
+            max_distance_per_step = (map.default_speed + map.police_extra_speed) / 100000
+        else:
+            max_distance_per_step = map.default_speed / 100000
 
-    if isinstance(actor, Police):
-        max_distance_per_step = (map.default_speed + map.police_extra_speed) / 100000
-    else:
-        max_distance_per_step = map.default_speed / 100000
-    
-    coordinate_step_x = max_distance_per_step
-    coordinate_step_y = max_distance_per_step * m
-
-    # Walk
-    if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-        actor.coordinates.x += coordinate_step_x
-        if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
+        if route_length < max_distance_per_step:
             actor.coordinates.x = actor.coordinates.direction_checkmark_x
-    else:
-        actor.coordinates.x -= coordinate_step_x
-        if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-            actor.coordinates.x = actor.coordinates.direction_checkmark_x
-
-    if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-        actor.coordinates.y += coordinate_step_y
-        if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
             actor.coordinates.y = actor.coordinates.direction_checkmark_y
-    else:
-        actor.coordinates.y -= coordinate_step_y
-        if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+            distance_left = max_distance_per_step - route_length
+            actor_run_path(actor, distance_left)
+        elif route_length >= max_distance_per_step:
+            scale_factor = max_distance_per_step / route_length
+            coordinate_step_x = scale_factor * coordinate_gap_x
+            coordinate_step_y = scale_factor * coordinate_gap_y
+
+            if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+                actor.coordinates.x += coordinate_step_x
+            else:
+                actor.coordinates.x -= coordinate_step_x
+
+            if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+                actor.coordinates.y += coordinate_step_y
+            else:
+                actor.coordinates.y -= coordinate_step_y
+        else:
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
             actor.coordinates.y = actor.coordinates.direction_checkmark_y
 
-    return actor
+        return actor
 
 
 def simulate_actor_actions(actor_index, actor):
@@ -513,7 +512,7 @@ def simulate_actor_actions(actor_index, actor):
                 # criminal uses new route
                 path = None
                 while path is None:
-                    path = map.get_random_actor_path(actor.navigation_route.streets[-1],
+                    path = map.get_random_actor_path(actor.navigation_route.streets[actor.navigation_route.step],
                                                      [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path, True)
                 actor.set_navigation_step(0)
@@ -794,7 +793,7 @@ if __name__ == "__main__":
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=100 * 1000,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
