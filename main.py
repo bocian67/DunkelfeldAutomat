@@ -22,6 +22,7 @@ from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
 from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from models.navigation import NavigationRoute
+from statictics_writer import StatisticsWriter
 
 mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
 
@@ -40,7 +41,8 @@ global map
 global fig
 
 class Events(Enum):
-    ROBBING=auto()
+    ROBBING=auto(),
+    PRISON=auto()
 
 class Map:
     global c
@@ -68,13 +70,20 @@ class Map:
         self.penalty_boundaries = [0, 60]
         self.default_speed = 20
         self.police_extra_speed = 0
+        self.police_percent = 20
+        self.criminal_percent = 30
 
         # Logging
         self.new_logs = []
         self.dashboard = {
-            str(Events.ROBBING): 0
+            str(Events.ROBBING): 0,
+            str(Events.PRISON): 0,
         }
         self.additionals = []
+        self.criminal_count = 0
+        self.police_count = 0
+        self.civil_count = 0
+        self.logger = StatisticsWriter()
 
     def terminate(self):
         global is_running
@@ -101,6 +110,7 @@ class Map:
             # coords = self.get_random_actor_coordinate()
             if isinstance(actor, Criminal):
                 c += 1
+        self.logger.init_parameter(self.actor_count, self.criminal_percent, self.police_percent, self.penalty, self.default_speed, self.police_extra_speed, self.seed)
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
@@ -198,6 +208,9 @@ class Map:
                 police += 1
             elif isinstance(value, Civilian):
                 civilian += 1
+        self.criminal_count = criminal
+        self.police_count = police
+        self.civil_count = civilian
         return html.Div(children=[
             html.Div(children=["Civilian: " + str(civilian)]),
             html.Div(children=["Police: " + str(police)]),
@@ -507,6 +520,7 @@ def simulate_actor_actions(actor_index, actor):
                 map.new_logs.append(
                     ActorLog(other_actor.id, "green", ActorLogAction.SEND_TO_PRISON,
                              f"{other_actor.id}"))
+                map.dashboard[str(Events.PRISON)] += 1
     return actor
 
 
@@ -551,6 +565,9 @@ def update_graph_live(n, n_button, old_log_children):
         delayed(simulate_actor_actions)(actor_index, actor) for actor_index, actor in enumerate(actors))
     data_df = actors_to_df(actors)
     additional_data = additionals_to_df(map.additionals)
+    children = map.generate_info_table()
+    map.logger.write_csv(str(map.police_count), str(map.criminal_count), str(map.civil_count),
+                         str(map.dashboard[str(Events.ROBBING)]), str(map.dashboard[str(Events.PRISON)]))
 
     data_map.lat = data_df.y.values
     data_map.lon = data_df.x.values
@@ -564,7 +581,6 @@ def update_graph_live(n, n_button, old_log_children):
         additional_map.lat = []
         additional_map.lon = []
     fig['layout']['uirevision'] = "foo"
-    children = map.generate_info_table()
     new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
     map.new_logs.clear()
     return fig, children, new_log_children
@@ -586,15 +602,15 @@ def init_random_using_slider(button_value, criminal_value, police_value, seed_va
     if button_value:
         if is_running:
             map.terminate()
+        map = Map()
         map.seed = seed_value
         map.default_speed = speed_value
         map.penalty = penalty_months
-        map.police_extra_speed = police_value
+        map.police_extra_speed = police_mobility_value
+        map.police_percent = police_value
+        map.criminal_percent = criminal_value
         map.init_board()
-        #map.change_road_possibility = change_road_value
-        map.random_fill(criminal_value, police_value)
-        # thread = Thread(target=map.start_simulation)
-        # thread.start()
+        map.random_fill(map.criminal_percent, map.police_percent)
     return 0
 
 
@@ -632,6 +648,7 @@ if __name__ == "__main__":
     data = map.actors
     additional_data = additionals_to_df(map.additionals)
     data_df = actors_to_df(data)
+
     fig = go.Figure(go.Scattermapbox(
         lat=data_df.y.values,
         lon=data_df.x.values,
@@ -690,7 +707,7 @@ if __name__ == "__main__":
                         0,
                         100,
                         step=5,
-                        value=30,
+                        value=map.criminal_percent,
                         id='criminal-slider'
                     ),
                     html.Label("Police in %", htmlFor='police-slider'),
@@ -698,7 +715,7 @@ if __name__ == "__main__":
                         0,
                         100,
                         step=5,
-                        value=20,
+                        value=map.police_percent,
                         id='police-slider'
                     ),
                     html.Label("Penalty in Months", htmlFor='penalty-slider'),
