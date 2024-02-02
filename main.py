@@ -1,27 +1,25 @@
 # -*- coding: utf-8 -*-
-import copy
 import json
 import math
 import multiprocessing
 import os
 import random
-import sys
 from enum import Enum, auto
 from time import sleep
 
 import pandas as pd
-from flask import Flask, request
-from flask_cors import CORS, cross_origin
-from joblib import Parallel, delayed
-from termcolor import colored
 import plotly.graph_objects as go
 from dash import Dash, dcc, html, Output, Input, callback, State
+from flask import Flask
+from flask_cors import CORS
+from joblib import Parallel, delayed
+import plotly.express as px
 
 from database import get_database
+from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from initial_spawn_places import InitialSpawnPlaces
 from models.ActorLog import ActorLog, ActorLogAction, ActorEventLog
 from models.actors import *
-from helpers import get_closest_intersection, get_closest_street_point_index, reverse_route
 from models.navigation import NavigationRoute
 from statictics_writer import StatisticsWriter
 
@@ -40,6 +38,7 @@ bounds_mittweida = {"lat_min": 50.979491, "lat_max": 50.995568, "lon_min": 12.95
 global thread
 global map
 global fig
+global infochart
 
 class Events(Enum):
     ROBBING=auto(),
@@ -102,6 +101,7 @@ class Map:
             self.actors.append(Criminal(i, coords, 0))
 
     def random_fill(self, criminal_probability=30, police_probability=20):
+        init_seed = self.seed
         global c
         c = 0
 
@@ -112,7 +112,7 @@ class Map:
             # coords = self.get_random_actor_coordinate()
             if isinstance(actor, Criminal):
                 c += 1
-        self.logger.init_parameter(self.actor_count, self.criminal_percent, self.police_percent, self.penalty, self.default_speed, self.police_extra_speed, self.seed)
+        self.logger.init_parameter(self.actor_count, self.criminal_percent, self.police_percent, self.penalty, self.default_speed, self.police_extra_speed, init_seed)
 
     def create_random_actor_with_path(self, actor_index, criminal_probability, police_probability):
         path = None
@@ -345,7 +345,7 @@ def actor_run_path(actor, distance=None):
         actor.coordinates.y = actor.coordinates.direction_checkmark_y
         distance_left = max_distance_per_step - route_length
         actor_run_path(actor, distance_left)
-    elif route_length > max_distance_per_step:
+    elif route_length >= max_distance_per_step:
         scale_factor = max_distance_per_step / route_length
         coordinate_step_x = scale_factor * coordinate_gap_x
         coordinate_step_y = scale_factor * coordinate_gap_y
@@ -376,7 +376,7 @@ def find_all_connections(from_street_id):
             return result
 
 
-def actor_run_street(actor):
+def actor_run_street(actor, distance=None):
     street = map.transportations_collection.find_one({"id": actor.coordinates.street_id})
     linestrings = street["geometry"]["coordinates"]
     linestring_index = get_closest_street_point_index(
@@ -436,44 +436,42 @@ def actor_run_street(actor):
             actor.coordinates.direction_checkmark_x = next_linestring[0]
             actor.coordinates.direction_checkmark_y = next_linestring[1]
 
-    # Walking speed
-    coordinate_gap_x = abs(actor.coordinates.previous_checkmark_x - actor.coordinates.direction_checkmark_x)
-    coordinate_gap_y = abs(actor.coordinates.previous_checkmark_y - actor.coordinates.direction_checkmark_y)
+        # Walking speed
+        coordinate_gap_x = abs(actor.coordinates.x - actor.coordinates.direction_checkmark_x)
+        coordinate_gap_y = abs(actor.coordinates.y - actor.coordinates.direction_checkmark_y)
 
-    # calculate pitch
-    if coordinate_gap_x == 0:
-        m = 1
-    else:
-        m = coordinate_gap_y / coordinate_gap_x
+        route_length = math.sqrt(math.pow(coordinate_gap_x, 2) + math.pow(coordinate_gap_y, 2))
+        if distance is not None:
+            max_distance_per_step = distance
+        elif isinstance(actor, Police):
+            max_distance_per_step = (map.default_speed + map.police_extra_speed) / 100000
+        else:
+            max_distance_per_step = map.default_speed / 100000
 
-    if isinstance(actor, Police):
-        max_distance_per_step = (map.default_speed + map.police_extra_speed) / 100000
-    else:
-        max_distance_per_step = map.default_speed / 100000
-    
-    coordinate_step_x = max_distance_per_step
-    coordinate_step_y = max_distance_per_step * m
-
-    # Walk
-    if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-        actor.coordinates.x += coordinate_step_x
-        if actor.coordinates.x > actor.coordinates.direction_checkmark_x:
+        if route_length < max_distance_per_step:
             actor.coordinates.x = actor.coordinates.direction_checkmark_x
-    else:
-        actor.coordinates.x -= coordinate_step_x
-        if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
-            actor.coordinates.x = actor.coordinates.direction_checkmark_x
-
-    if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
-        actor.coordinates.y += coordinate_step_y
-        if actor.coordinates.y > actor.coordinates.direction_checkmark_y:
             actor.coordinates.y = actor.coordinates.direction_checkmark_y
-    else:
-        actor.coordinates.y -= coordinate_step_y
-        if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+            distance_left = max_distance_per_step - route_length
+            actor_run_path(actor, distance_left)
+        elif route_length >= max_distance_per_step:
+            scale_factor = max_distance_per_step / route_length
+            coordinate_step_x = scale_factor * coordinate_gap_x
+            coordinate_step_y = scale_factor * coordinate_gap_y
+
+            if actor.coordinates.x < actor.coordinates.direction_checkmark_x:
+                actor.coordinates.x += coordinate_step_x
+            else:
+                actor.coordinates.x -= coordinate_step_x
+
+            if actor.coordinates.y < actor.coordinates.direction_checkmark_y:
+                actor.coordinates.y += coordinate_step_y
+            else:
+                actor.coordinates.y -= coordinate_step_y
+        else:
+            actor.coordinates.x = actor.coordinates.direction_checkmark_x
             actor.coordinates.y = actor.coordinates.direction_checkmark_y
 
-    return actor
+        return actor
 
 
 def simulate_actor_actions(actor_index, actor):
@@ -513,7 +511,7 @@ def simulate_actor_actions(actor_index, actor):
                 # criminal uses new route
                 path = None
                 while path is None:
-                    path = map.get_random_actor_path(actor.navigation_route.streets[-1],
+                    path = map.get_random_actor_path(actor.navigation_route.streets[actor.navigation_route.step],
                                                      [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path, True)
                 actor.set_navigation_step(0)
@@ -565,13 +563,15 @@ def get_near_police_actors(actor, count=3):
 # background=True,
 # manager=background_callback_manager)
 @callback(Output('graph', 'figure'),
-          Output('info', 'children'),
+          #Output('info', 'children'),
           Output('log-container', 'children'),
+          Output('infochart', 'figure'),
           Input('interval-component', 'n_intervals'),
           Input("next-button", "n_clicks"),
           State('log-container', 'children'))
 def update_graph_live(n, n_button, old_log_children):
     global fig
+    global infochart
     map.additionals.clear()
     data_map = fig.data[0]
     # data = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(delayed(actor_run_street)(actor) for actor in data)
@@ -583,8 +583,8 @@ def update_graph_live(n, n_button, old_log_children):
     data_df = actors_to_df(actors)
     additional_data = additionals_to_df(map.additionals)
     children = map.generate_info_table()
-    map.logger.write_csv(str(map.police_count), str(map.criminal_count), str(map.civil_count),
-                         str(map.dashboard[str(Events.ROBBING)]), str(map.dashboard[str(Events.PRISON)]))
+    map.logger.write_csv(map.police_count, map.criminal_count, map.civil_count,
+                         map.dashboard[str(Events.ROBBING)], map.dashboard[str(Events.PRISON)])
 
     data_map.lat = data_df.y.values
     data_map.lon = data_df.x.values
@@ -598,9 +598,24 @@ def update_graph_live(n, n_button, old_log_children):
         additional_map.lat = []
         additional_map.lon = []
     fig['layout']['uirevision'] = "foo"
+
+    infochart_data = map.logger.data_to_df()
+    infochart = px.line(infochart_data, x="iteration", y="y", color="category")
+    infochart['data'][0]['line']['dash'] = "dot"
+    infochart['data'][1]['line']['dash'] = "dot"
+    infochart['data'][2]['line']['dash'] = "dot"
+    infochart['data'][3]['line']['dash'] = "solid"
+    infochart['data'][4]['line']['dash'] = "longdash"
+
+
+
+
+    infochart['layout']['uirevision'] = "foo"
+
+
     new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
     map.new_logs.clear()
-    return fig, children, new_log_children
+    return fig, new_log_children, infochart
 
 
 @callback(Output('submit-button', 'n_clicks'),
@@ -657,6 +672,7 @@ if __name__ == "__main__":
     global map
     global is_running
     global fig
+
     os.system('color')
     is_running = False
     map = Map()
@@ -784,21 +800,25 @@ if __name__ == "__main__":
         ]),
         html.Div(style={"display": "flex", "flex-direction": "row", "height": "100vh"}, children=[
             dcc.Graph(figure=fig, id='graph', style={"flex": "5"}),
-            html.Div(id="log-container",
-                     style={"padding": "10px",
-                            "display": "flex",
-                            "overflow": "scroll",
-                            "flex": "1",
-                            "flex-direction": "column-reverse"},
-                     children=[html.P("Start of the logs")])
+            html.Div(style={"display": "flex", "flex-direction": "column", "flex": "1"}, children=[
+                html.Div(id="log-container",
+                         style={"padding": "10px",
+                                "display": "flex",
+                                "overflow": "scroll",
+                                "flex": "1",
+                                "flex-direction": "column-reverse"},
+                         children=[html.P("Start of the logs")])
+            ])
+
         ]),
         dcc.Interval(
             id='interval-component',
-            interval=100 * 1000,  # in milliseconds
+            interval=1 * 1000,  # in milliseconds
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
-        html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
+        dcc.Graph(id='infochart', style={"flex": "1", "padding": "1ßpx", "border": "2px red"}),
+        #html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
