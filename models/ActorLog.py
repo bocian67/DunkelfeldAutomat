@@ -40,5 +40,5 @@ class ActorLogAction(Enum):
     NEXT_NAVIGATION_POINT = "sets next navigation point"
     ROBBING = "robbed"
     GOES_LAST_SUSPECT_PLACE = "goes to suspects last location point"
-    FLEES = "flees to"
+    FLEES = "flees"
     SEND_TO_PRISON = "was send to prison"

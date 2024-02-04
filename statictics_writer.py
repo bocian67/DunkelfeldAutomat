@@ -8,7 +8,7 @@ import pandas as pd
 class StatisticsWriter():
     def __init__(self):
         self.name = datetime.now().strftime("%d-%m-%Y_%H-%M-%S") + ".csv"
-        self.path = Path(self.name)
+        self.path = Path("logs", self.name)
         self.data = []
         self.iteration = 0
 

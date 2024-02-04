@@ -64,12 +64,12 @@ class Map:
         # Changeable properties
         self.change_road_possibility = 50
         self.step_size_divider = 2
-        self.seed = 123456789
+        self.seed = 2463647679
         self.actor_count = 40
         self.penalty = 12
         self.penalty_boundaries = [0, 60]
-        self.default_speed = 20
-        self.police_extra_speed = 0
+        self.default_speed = 30
+        self.police_extra_speed = 20
         self.police_percent = 20
         self.criminal_percent = 30
         self.starting_location = "ALL"
@@ -85,6 +85,8 @@ class Map:
         self.police_count = 0
         self.civil_count = 0
         self.logger = StatisticsWriter()
+
+        self.criminal_to_remove = []
 
     def terminate(self):
         global is_running
@@ -494,20 +496,6 @@ def simulate_actor_actions(actor_index, actor):
                 map.dashboard[str(Events.ROBBING)] += 1
                 map.additionals.append([actor.coordinates.x, actor.coordinates.y])
 
-                # police seeks criminal
-                near_police_actors = get_near_police_actors(actor)
-                for police_actor in near_police_actors:
-                    path = actor_pathfinding_from_db(police_actor.navigation_route.streets[-1],
-                                                     [police_actor.coordinates.x, police_actor.coordinates.y],
-                                                     actor.coordinates.street_id,
-                                                     [actor.coordinates.x, actor.coordinates.y])
-                    if path is not None:
-                        actor.set_navigation_route(path, True)
-                        actor.set_navigation_step(0)
-                        map.new_logs.append(
-                            ActorLog(actor.id, actor.color, ActorLogAction.GOES_LAST_SUSPECT_PLACE,
-                                     f"{actor.coordinates.x}, {actor.coordinates.y}"))
-
                 # criminal uses new route
                 path = None
                 while path is None:
@@ -515,13 +503,36 @@ def simulate_actor_actions(actor_index, actor):
                                                      [actor.coordinates.x, actor.coordinates.y])
                 actor.set_navigation_route(path, True)
                 actor.set_navigation_step(0)
-                map.new_logs.append(
-                    ActorLog(actor.id, actor.color, ActorLogAction.FLEES,
-                             f"{actor.coordinates.x}, {actor.coordinates.y}"))
+                try:
+                    street_id = actor.navigation_route.streets[actor.navigation_route.step]
+                    street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
+                    map.new_logs.append(
+                        ActorLog(actor.id, actor.color, ActorLogAction.FLEES, street_name))
+                except:
+                    pass
         if actor.robbed_counter is not None:
             actor.robbed_counter += 1
             if actor.robbed_counter >= 60:
                 actor.set_incognito()
+
+            # police seeks criminal
+            near_police_actors = get_near_police_actors(actor)
+            for police_actor in near_police_actors:
+                if police_actor.suspect_id is None:
+                    path = actor_pathfinding_from_db(
+                        police_actor.navigation_route.streets[police_actor.navigation_route.step],
+                        [police_actor.coordinates.x, police_actor.coordinates.y],
+                        actor.coordinates.street_id,
+                        [actor.coordinates.x, actor.coordinates.y])
+                    if path is not None:
+                        police_actor.set_navigation_route(path, True)
+                        police_actor.set_navigation_step(0)
+                        map.new_logs.append(
+                            ActorLog(police_actor.id, police_actor.color, ActorLogAction.GOES_LAST_SUSPECT_PLACE,
+                                     f"{actor.coordinates.x}, {actor.coordinates.y}"))
+                        police_actor.suspect_id = actor.id
+                    else:
+                        police_actor.suspect_id = None
 
         # Police action
     elif isinstance(actor, Police):
@@ -531,11 +542,13 @@ def simulate_actor_actions(actor_index, actor):
 
             if actor.can_touch_actor(other_actor) and other_actor.robbed is not None:
                 # criminal is caught and goes to prison
+                #map.criminal_to_remove.append(other_actor.id)
                 map.actors.remove(other_actor)
                 map.new_logs.append(
                     ActorLog(other_actor.id, "green", ActorLogAction.SEND_TO_PRISON,
-                             f"{other_actor.id}"))
+                             f"{actor.id}"))
                 map.dashboard[str(Events.PRISON)] += 1
+
     return actor
 
 
@@ -580,6 +593,11 @@ def update_graph_live(n, n_button, old_log_children):
         delayed(actor_run_path)(actor) for actor in actors)
     actors = Parallel(n_jobs=multiprocessing.cpu_count(), prefer="threads")(
         delayed(simulate_actor_actions)(actor_index, actor) for actor_index, actor in enumerate(actors))
+    #map.actors = actors
+    #for i in map.actors:
+    #    if i.id in map.criminal_to_remove:
+    #        map.actors.remove(i)
+    #        map.criminal_to_remove.remove(i.id)
     data_df = actors_to_df(actors)
     additional_data = additionals_to_df(map.additionals)
     children = map.generate_info_table()
@@ -588,6 +606,7 @@ def update_graph_live(n, n_button, old_log_children):
 
     data_map.lat = data_df.y.values
     data_map.lon = data_df.x.values
+    data_map.text = data_df.id.values
     data_map.marker.color = data_df.color.values
 
     additional_map = fig.data[1]
@@ -607,11 +626,7 @@ def update_graph_live(n, n_button, old_log_children):
     infochart['data'][3]['line']['dash'] = "solid"
     infochart['data'][4]['line']['dash'] = "longdash"
 
-
-
-
     infochart['layout']['uirevision'] = "foo"
-
 
     new_log_children = list(reversed([i.log_to_div() for i in map.new_logs])) + old_log_children
     map.new_logs.clear()
@@ -622,7 +637,6 @@ def update_graph_live(n, n_button, old_log_children):
           Input('submit-button', 'n_clicks'),
           Input('criminal-slider', 'value'),
           Input('police-slider', 'value'),
-          #Input('road-slider', 'value'),
           Input('seed_input', 'value'),
           Input('speed-slider', 'value'),
           Input('penalty-slider', 'value'),
@@ -734,7 +748,7 @@ if __name__ == "__main__":
 
     dash_app = Dash(__name__, server=app)
     dash_app.layout = html.Div([
-        html.Div(id='input-container', children=[
+        html.Div(id='input-container', style={"padding": "20px"}, children=[
             html.Div(style={"display": "flex", "flex-direction": "row", "width": "100%"}, children=[
                 html.Div(style={"width": "50%"}, children=[
                     html.Label("Criminals in %", htmlFor='criminal-slider'),
@@ -817,8 +831,7 @@ if __name__ == "__main__":
             n_intervals=0
         ),
         html.Button("Next Step", id="next-button"),
-        dcc.Graph(id='infochart', style={"flex": "1", "padding": "1ßpx", "border": "2px red"}),
-        #html.Div(id='info', style={"margin": "20px 40px 20px 10px"}),
+        dcc.Graph(id='infochart', style={"flex": "1", "padding": "1ßpx"}),
     ], style={"height": "100vh"})
 
     dash_app.run_server(debug=True, use_reloader=True)
