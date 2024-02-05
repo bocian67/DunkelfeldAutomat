@@ -38,7 +38,7 @@ class Actor:
 
     def can_touch_actor(self, destination_actor):
         distance = abs(self.coordinates.x - destination_actor.coordinates.x) + abs(self.coordinates.y - destination_actor.coordinates.y)
-        if distance <= 0.00003:
+        if distance <= 0.00004:
             return True
         return False
 
@@ -82,7 +82,7 @@ class Police(Actor):
         super().__init__(id, coordinates)
         self.z = z
         self.color = "blue"
-        self.suspect_id = None#
+        self.suspect_id = None
         self.suspect_last_known_coordinate = None
 
     def set_suspect(self, suspect_id, suspect_last_known_coordintates):
