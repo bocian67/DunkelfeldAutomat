@@ -6,6 +6,7 @@ import os
 import random
 from enum import Enum, auto
 from time import sleep
+from dotenv import load_dotenv
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -23,7 +24,8 @@ from models.actors import *
 from models.navigation import NavigationRoute
 from statictics_writer import StatisticsWriter
 
-mapbox_token = "pk.eyJ1IjoiYm9jaWFuNjciLCJhIjoiY2xuazV3YjB1MGsxNzJqczNjMjRnaXlqYiJ9.C2I3bmAseZVgWraJbHy3zA"
+load_dotenv()
+mapbox_token = os.getenv('MAPBOX_TOKEN')
 
 app = Flask(__name__)
 CORS(app)
@@ -65,7 +67,7 @@ class Map:
         self.change_road_possibility = 50
         self.step_size_divider = 2
         self.seed = 2463647679
-        self.actor_count = 40
+        self.actor_count = 60
         self.penalty = 12
         self.penalty_boundaries = [0, 60]
         self.default_speed = 30
@@ -286,8 +288,7 @@ def actor_run_path(actor, distance=None):
     if actor.coordinates.direction_checkmark_x == actor.coordinates.x and actor.coordinates.direction_checkmark_y == actor.coordinates.y:
         navigation_route = actor.navigation_route.get_route()
         if actor.coordinates.x == navigation_route[0] and actor.coordinates.y == navigation_route[1]:
-            actor.navigation_route.step += 1
-            if actor.navigation_route.step >= len(actor.navigation_route.streets):
+            if actor.navigation_route.step + 1 >= len(actor.navigation_route.streets):
                 # set other route
                 path = None
                 while path is None:
@@ -299,6 +300,7 @@ def actor_run_path(actor, distance=None):
                     ActorLog(actor.id, actor.color, ActorLogAction.NEW_PATH, f"{actor.coordinates.x}, {actor.coordinates.y}"))
                 return actor
             else:
+                actor.navigation_route.step += 1
                 actor.set_navigation_step(actor.navigation_route.step)
                 try:
                     street_id = actor.navigation_route.streets[actor.navigation_route.step]
@@ -494,7 +496,7 @@ def simulate_actor_actions(actor_index, actor):
                 street_name = map.transportations_collection.find_one({"id": street_id})["properties"]["name"]
                 map.new_logs.append(ActorEventLog(actor.id, ActorLogAction.ROBBING, street_name, other_actor_id))
                 map.dashboard[str(Events.ROBBING)] += 1
-                map.additionals.append([actor.coordinates.x, actor.coordinates.y])
+                map.additionals.append([actor.coordinates.x, actor.coordinates.y, "yellow"])
 
                 # criminal uses new route
                 path = None
@@ -548,6 +550,7 @@ def simulate_actor_actions(actor_index, actor):
                     ActorLog(other_actor.id, "green", ActorLogAction.SEND_TO_PRISON,
                              f"{actor.id}"))
                 map.dashboard[str(Events.PRISON)] += 1
+                map.additionals.append([actor.coordinates.x, actor.coordinates.y, "blue"])
 
     return actor
 
@@ -613,6 +616,7 @@ def update_graph_live(n, n_button, old_log_children):
     if len(map.additionals) > 0:
         additional_map.lat = additional_data.y.values
         additional_map.lon = additional_data.x.values
+        additional_map.marker.color = additional_data.color.values
     else:
         additional_map.lat = []
         additional_map.lon = []
@@ -677,7 +681,7 @@ def actors_to_df(data):
 def additionals_to_df(data):
     data_attrs = []
     for item in data:
-        item_vars = {"x": item[0], "y": item[1]}
+        item_vars = {"x": item[0], "y": item[1], "color": item[2]}
         data_attrs.append(item_vars)
     return pd.DataFrame(data_attrs)
 
